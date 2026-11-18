@@ -13,6 +13,7 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat
 from smai.pipeline import SmaiPipeline
+from smai.publishing import InstagramBrowserAutomator
 from smai.web.app import create_app
 
 
@@ -38,6 +39,17 @@ def brands() -> None:
     for slug in list_brand_slugs(settings):
         b = load_brand(slug, settings)
         typer.echo(f"- {slug}: {b.name} ({b.handle}) — {b.niche}")
+
+
+@app.command()
+def ig_login(
+    wait: int = typer.Option(90, help="Seconds to wait for you to log into Instagram."),
+) -> None:
+    """Open a visible Chromium browser window so you can log into Instagram once."""
+    settings = Settings()
+    automator = InstagramBrowserAutomator(settings)
+    res = asyncio.run(automator.launch_login_window(wait_seconds=wait))
+    typer.echo(json.dumps(res, indent=2))
 
 
 @app.command()
@@ -146,7 +158,7 @@ def cycle(
 @app.command()
 def publish(
     draft_id: int = typer.Argument(..., help="Draft ID to publish or export."),
-    mode: str = typer.Option("", help="Override mode: export | graph_api"),
+    mode: str = typer.Option("", help="Override mode: export | browser | browser_share | graph_api"),
 ) -> None:
     """Publish via Meta Graph API or export a local bundle."""
     settings = Settings()

@@ -168,6 +168,7 @@
       </form>
       {% endif %}
       <span class="badge">LLM: {{ llm_provider }} {% if gemini_key_set %}&#10003; Live Key{% else %}(Paste Gemini Key Below){% endif %}</span>
+      <span class="badge">IG Browser: {% if ig_browser_connected %}&#10003; Session Saved{% else %}Not Logged In{% endif %}</span>
       <span class="badge">Publish: {{ publish_mode }}</span>
     </div>
   </header>
@@ -189,7 +190,14 @@
     </section>
 
     <section class="side-card" style="margin-bottom:0; border-color:var(--accent);">
-      <h3 class="section-title" style="margin-bottom:8px;">Step 0 &middot; Analyze &amp; Connect Your Instagram Account (Before Posting)</h3>
+      <div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px;">
+        <h3 class="section-title" style="margin:0;">Step 0 &middot; Connect, Login &amp; Analyze Your Real Instagram Account</h3>
+        <form method="post" action="/actions/ig-browser-login">
+          <button type="submit" style="background:#E1306C; color:#fff;">
+            {% if ig_browser_connected %}&#10003; Re-Open Instagram Browser Window{% else %}1. Click Here to Open Instagram &amp; Login (No API Key Needed){% endif %}
+          </button>
+        </form>
+      </div>
       <form method="post" action="/actions/analyze-account" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px; align-items:center;">
         <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
         <input type="text" name="handle_or_url" value="{{ brand.handle }}" placeholder="Instagram @username or instagram.com/..." required />
@@ -355,11 +363,19 @@
             </form>
 
             <div class="actions">
+              <form method="post" action="/drafts/{{ draft.id }}/ig-browser">
+                <input type="hidden" name="auto_share" value="0" />
+                <button type="submit" style="background:#E1306C; color:#fff;">Test Live on Instagram (Open Browser &amp; Upload Draft)</button>
+              </form>
+              <form method="post" action="/drafts/{{ draft.id }}/ig-browser">
+                <input type="hidden" name="auto_share" value="1" />
+                <button type="submit" class="good">Auto-Post Live on Instagram Now</button>
+              </form>
               <form method="post" action="/drafts/{{ draft.id }}/approve">
-                <button type="submit" class="good">Approve &amp; Schedule</button>
+                <button type="submit" class="secondary">Approve &amp; Schedule</button>
               </form>
               <form method="post" action="/drafts/{{ draft.id }}/publish">
-                <button type="submit">Publish / Export Now</button>
+                <button type="submit" class="secondary">Export Local Bundle</button>
               </form>
               <form method="post" action="/drafts/{{ draft.id }}/reject">
                 <button type="submit" class="bad">Reject</button>

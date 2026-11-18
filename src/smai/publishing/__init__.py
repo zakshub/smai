@@ -1,7 +1,13 @@
-"""Publishing adapters (Meta Graph API, public media staging, local export)."""
+"""Publishing adapters (Meta Graph API, Live Instagram Browser Uploader, public staging, local export)."""
 
 from smai.publishing.exporter import export_draft_bundle
+from smai.publishing.ig_browser import InstagramBrowserAutomator
 from smai.publishing.instagram_api import InstagramGraphClient
 from smai.publishing.storage import MediaStagingService
 
-__all__ = ["InstagramGraphClient", "MediaStagingService", "export_draft_bundle"]
+__all__ = [
+    "InstagramBrowserAutomator",
+    "InstagramGraphClient",
+    "MediaStagingService",
+    "export_draft_bundle",
+]

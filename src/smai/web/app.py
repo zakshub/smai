@@ -18,6 +18,7 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat, InsightSnapshot
 from smai.pipeline import SmaiPipeline
+from smai.publishing import InstagramBrowserAutomator
 from smai.scheduler import SchedulerWorker, pick_next_window_slot
 
 
@@ -87,6 +88,7 @@ def create_app(
                 "account_audit": db.get_latest_account_audit(brand_cfg.slug),
                 "llm_provider": f"{cfg.smai_llm_provider} ({cfg.smai_llm_model})",
                 "gemini_key_set": bool(cfg.effective_gemini_key()),
+                "ig_browser_connected": InstagramBrowserAutomator(cfg).has_saved_session(),
                 "publish_mode": cfg.smai_publish_mode,
                 "project_root_path": str(cfg.project_root.resolve()),
                 "media_dir_path": str(cfg.media_dir().resolve()),
@@ -209,6 +211,22 @@ def create_app(
         if not draft:
             raise HTTPException(status_code=404, detail="Draft not found")
         db.update_draft_content(draft_id, approval_status="rejected")
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/actions/ig-browser-login")
+    async def action_ig_browser_login() -> RedirectResponse:
+        automator = InstagramBrowserAutomator(cfg)
+        await automator.launch_login_window(wait_seconds=90)
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/drafts/{draft_id}/ig-browser")
+    async def action_publish_ig_browser(
+        draft_id: int,
+        auto_share: str = Form("0"),
+    ) -> RedirectResponse:
+        pipeline = SmaiPipeline(cfg, db)
+        mode = "browser_share" if auto_share == "1" else "browser"
+        await pipeline.publish_draft(draft_id, mode=mode)
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/drafts/{draft_id}/publish")

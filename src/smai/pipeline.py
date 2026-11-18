@@ -11,7 +11,12 @@ from smai.config import BrandBrain, Settings, load_brand
 from smai.db.database import Database
 from smai.db.models import ContentFormat, ContentPackage, QAReport, TopicCandidate
 from smai.media import CarouselBuilder, ReelBuilder
-from smai.publishing import InstagramGraphClient, MediaStagingService, export_draft_bundle
+from smai.publishing import (
+    InstagramBrowserAutomator,
+    InstagramGraphClient,
+    MediaStagingService,
+    export_draft_bundle,
+)
 
 
 class SmaiPipeline:
@@ -279,6 +284,26 @@ class SmaiPipeline:
 
         image_assets = [a for a in assets if a["asset_type"] == "slide_png"]
         target_mode = (mode or self.settings.smai_publish_mode).lower().strip()
+
+        if target_mode in ("browser", "browser_share"):
+            automator = InstagramBrowserAutomator(self.settings)
+            if draft["format"] in ("reel", "slide_video"):
+                upload_paths = [Path(a["local_path"]) for a in assets if a["local_path"].endswith(".mp4")]
+            else:
+                upload_paths = [Path(a["local_path"]) for a in image_assets]
+            res_browser = await automator.upload_draft_to_instagram(
+                media_paths=upload_paths,
+                caption=draft["caption"],
+                auto_share=(target_mode == "browser_share"),
+            )
+            log_id = self.db.record_publish(
+                draft_id=draft_id,
+                mode=target_mode,
+                permalink="https://www.instagram.com/",
+                export_path=",".join(res_browser["files_uploaded"]),
+            )
+            return {"publish_log_id": log_id, **res_browser}
+
         if target_mode == "graph_api":
             staging = MediaStagingService(self.settings)
             client = InstagramGraphClient(self.settings)
