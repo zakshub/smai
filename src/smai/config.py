@@ -100,10 +100,14 @@ class Settings(BaseSettings):
     smai_prefer_playwright: bool = True
 
     # LLM
-    smai_llm_provider: str = "mock"  # gemini | openai | anthropic | ollama | mock
+    smai_llm_provider: str = "gemini"  # gemini | openai | anthropic | ollama | mock
     smai_llm_model: str = "gemini-2.5-flash"
     gemini_api_key: str = ""
+    google_api_key: str = ""
     openai_api_key: str = ""
+
+    def effective_gemini_key(self) -> str:
+        return (self.gemini_api_key or self.google_api_key).strip()
     openai_base_url: str = "https://api.openai.com/v1"
     anthropic_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"

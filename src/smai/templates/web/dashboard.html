@@ -167,7 +167,7 @@
         </select>
       </form>
       {% endif %}
-      <span class="badge">LLM: {{ llm_provider }}</span>
+      <span class="badge">LLM: {{ llm_provider }} {% if gemini_key_set %}&#10003; Live Key{% else %}(Paste Gemini Key Below){% endif %}</span>
       <span class="badge">Publish: {{ publish_mode }}</span>
     </div>
   </header>
@@ -197,7 +197,8 @@
         <input type="text" name="bio_hint" placeholder="Optional current IG bio or target audience note" />
         <input type="text" name="ig_user_id" placeholder="Optional Meta IG_USER_ID (for live Graph API)" />
         <input type="password" name="ig_access_token" placeholder="Optional Meta IG_ACCESS_TOKEN" />
-        <button type="submit" class="good">Analyze My Instagram &amp; Tune Brand Brain</button>
+        <input type="password" name="gemini_api_key" placeholder="Optional Google GEMINI_API_KEY (saves to .env)" />
+        <button type="submit" class="good">Analyze My Instagram &amp; Save Settings</button>
       </form>
 
       {% if account_audit %}

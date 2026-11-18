@@ -124,6 +124,7 @@ class InstagramAccountAnalyzer:
         brand_slug: str = "default",
         ig_user_id: str = "",
         ig_access_token: str = "",
+        gemini_api_key: str = "",
     ) -> BrandBrain:
         """Update BrandBrain YAML + SQLite brand record from the account audit report."""
         try:
@@ -155,9 +156,14 @@ class InstagramAccountAnalyzer:
         self.db.upsert_brand(brand, ig_user_id=ig_user_id or self.settings.ig_user_id)
         self.db.save_account_audit(brand.slug, report.model_dump_json())
 
-        # If Graph API credentials were supplied in the form, update .env safely
-        if ig_user_id.strip() or ig_access_token.strip():
-            self._update_env_credentials(ig_user_id.strip(), ig_access_token.strip())
+        # If Graph API or Gemini credentials were supplied in the form, update .env safely
+        if ig_user_id.strip() or ig_access_token.strip() or gemini_api_key.strip():
+            self._update_env_credentials(
+                ig_user_id.strip(), ig_access_token.strip(), gemini_api_key.strip()
+            )
+            if gemini_api_key.strip():
+                self.settings.gemini_api_key = gemini_api_key.strip()
+                self.settings.smai_llm_provider = "gemini"
 
         return brand
 
@@ -380,7 +386,9 @@ class InstagramAccountAnalyzer:
             avg_comments=avg_comments,
         )
 
-    def _update_env_credentials(self, ig_user_id: str, ig_access_token: str) -> None:
+    def _update_env_credentials(
+        self, ig_user_id: str, ig_access_token: str, gemini_api_key: str = ""
+    ) -> None:
         env_path = self.settings.project_root / ".env"
         lines: list[str] = []
         if env_path.exists():
@@ -388,11 +396,13 @@ class InstagramAccountAnalyzer:
         elif (self.settings.project_root / ".env.example").exists():
             lines = (self.settings.project_root / ".env.example").read_text(encoding="utf-8").splitlines()
 
-        updates: dict[str, str] = {}
+        updates: dict[str, str] = {"SMAI_LLM_PROVIDER": "gemini"}
         if ig_user_id:
             updates["IG_USER_ID"] = ig_user_id
         if ig_access_token:
             updates["IG_ACCESS_TOKEN"] = ig_access_token
+        if gemini_api_key:
+            updates["GEMINI_API_KEY"] = gemini_api_key
 
         seen: set[str] = set()
         new_lines: list[str] = []

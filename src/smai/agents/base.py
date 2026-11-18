@@ -59,13 +59,14 @@ class LLMClient:
         draft_id: int | None = None,
     ) -> T:
         started = time.perf_counter()
-        if self.provider == "mock" and fallback_factory is not None:
+        missing_gemini_key = self.provider == "gemini" and not self.settings.effective_gemini_key()
+        if (self.provider == "mock" or missing_gemini_key) and fallback_factory is not None:
             result = fallback_factory()
             latency = int((time.perf_counter() - started) * 1000)
             if self.db:
                 self.db.log_agent_run(
                     agent_name=agent_name,
-                    model="mock-local",
+                    model=self.settings.smai_llm_model if self.provider == "gemini" else "mock-local",
                     status="ok",
                     latency_ms=latency,
                     draft_id=draft_id,
@@ -117,7 +118,7 @@ class LLMClient:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
     async def _call_gemini(self, system_prompt: str, user_prompt: str) -> LLMResponse:
-        api_key = self.settings.gemini_api_key
+        api_key = self.settings.effective_gemini_key()
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is not configured")
         url = (

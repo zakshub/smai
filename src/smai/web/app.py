@@ -85,7 +85,8 @@ def create_app(
                 "insights": db.list_top_insights(limit=5),
                 "algorithm_playbook": ALGORITHM_FORMAT_PLAYBOOK,
                 "account_audit": db.get_latest_account_audit(brand_cfg.slug),
-                "llm_provider": cfg.smai_llm_provider,
+                "llm_provider": f"{cfg.smai_llm_provider} ({cfg.smai_llm_model})",
+                "gemini_key_set": bool(cfg.effective_gemini_key()),
                 "publish_mode": cfg.smai_publish_mode,
                 "project_root_path": str(cfg.project_root.resolve()),
                 "media_dir_path": str(cfg.media_dir().resolve()),
@@ -108,9 +109,13 @@ def create_app(
         bio_hint: str = Form(""),
         ig_user_id: str = Form(""),
         ig_access_token: str = Form(""),
+        gemini_api_key: str = Form(""),
         brand_slug: str = Form("default"),
     ) -> RedirectResponse:
         slug = brand_slug.strip() or cfg.smai_default_brand
+        if gemini_api_key.strip():
+            cfg.gemini_api_key = gemini_api_key.strip()
+            cfg.smai_llm_provider = "gemini"
         analyzer = InstagramAccountAnalyzer(cfg, db)
         report = await analyzer.analyze(
             handle_or_url=handle_or_url,
@@ -125,6 +130,7 @@ def create_app(
             brand_slug=slug,
             ig_user_id=ig_user_id,
             ig_access_token=ig_access_token,
+            gemini_api_key=gemini_api_key,
         )
         pipeline = SmaiPipeline(cfg, db)
         await pipeline.run_scout(brand_slug=slug, limit=5)
