@@ -188,6 +188,51 @@
       </div>
     </section>
 
+    <section class="side-card" style="margin-bottom:0; border-color:var(--accent);">
+      <h3 class="section-title" style="margin-bottom:8px;">Step 0 &middot; Analyze &amp; Connect Your Instagram Account (Before Posting)</h3>
+      <form method="post" action="/actions/analyze-account" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px; align-items:center;">
+        <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
+        <input type="text" name="handle_or_url" value="{{ brand.handle }}" placeholder="Instagram @username or instagram.com/..." required />
+        <input type="text" name="niche_hint" value="{{ brand.niche }}" placeholder="Optional Niche (e.g. AI, Finance, Mindset, Fitness)" />
+        <input type="text" name="bio_hint" placeholder="Optional current IG bio or target audience note" />
+        <input type="text" name="ig_user_id" placeholder="Optional Meta IG_USER_ID (for live Graph API)" />
+        <input type="password" name="ig_access_token" placeholder="Optional Meta IG_ACCESS_TOKEN" />
+        <button type="submit" class="good">Analyze My Instagram &amp; Tune Brand Brain</button>
+      </form>
+
+      {% if account_audit %}
+      <div style="margin-top:14px; padding:14px; border-radius:12px; background:var(--bg); border:1px solid var(--border);">
+        <div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px;">
+          <div>
+            <strong style="color:var(--accent); font-size:15px;">Instagram Audit: {{ account_audit.handle }} ({{ account_audit.display_name }})</strong>
+            <span class="pill pass" style="margin-left:8px;">Audit Score: {{ account_audit.audit_score }} / 100</span>
+            <span class="pill" style="margin-left:4px;">Source: {{ account_audit.data_source }}</span>
+          </div>
+          <span style="font-size:12px; color:var(--muted);">Detected Niche: <strong>{{ account_audit.detected_niche }}</strong></span>
+        </div>
+        <p style="font-size:13px; color:#cbd5e1; margin:0 0 10px;">{{ account_audit.bio_diagnosis }}</p>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; font-size:12px;">
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
+            <strong style="color:var(--warn);">Algorithm Growth Gaps to Fix:</strong>
+            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
+              {% for gap in account_audit.algorithm_gaps %}
+                <li style="margin-bottom:4px;">{{ gap }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
+            <strong style="color:var(--good);">Recommended Content Mix Strategy:</strong>
+            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
+              {% for fmt_k, strat in account_audit.format_strategy.items() %}
+                <li style="margin-bottom:4px;"><strong>{{ fmt_k|upper }}:</strong> {{ strat }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+    </section>
+
     <section class="kpis">
       <div class="kpi"><div class="kpi-label">New Topics</div><div class="kpi-val">{{ stats.topics_new }}</div></div>
       <div class="kpi"><div class="kpi-label">Pending Review</div><div class="kpi-val">{{ stats.pending }}</div></div>

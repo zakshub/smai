@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from smai.agents.account_analyzer import InstagramAccountAnalyzer
 from smai.agents.algorithm import ALGORITHM_FORMAT_PLAYBOOK
 from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
@@ -83,6 +84,7 @@ def create_app(
                 "publish_logs": db.list_publish_logs(limit=10),
                 "insights": db.list_top_insights(limit=5),
                 "algorithm_playbook": ALGORITHM_FORMAT_PLAYBOOK,
+                "account_audit": db.get_latest_account_audit(brand_cfg.slug),
                 "llm_provider": cfg.smai_llm_provider,
                 "publish_mode": cfg.smai_publish_mode,
                 "project_root_path": str(cfg.project_root.resolve()),
@@ -98,6 +100,35 @@ def create_app(
     @app.get("/api/drafts")
     def api_list_drafts() -> list[dict[str, Any]]:
         return [_enrich_draft(d) for d in db.list_drafts(limit=50)]
+
+    @app.post("/actions/analyze-account")
+    async def action_analyze_account(
+        handle_or_url: str = Form(...),
+        niche_hint: str = Form(""),
+        bio_hint: str = Form(""),
+        ig_user_id: str = Form(""),
+        ig_access_token: str = Form(""),
+        brand_slug: str = Form("default"),
+    ) -> RedirectResponse:
+        slug = brand_slug.strip() or cfg.smai_default_brand
+        analyzer = InstagramAccountAnalyzer(cfg, db)
+        report = await analyzer.analyze(
+            handle_or_url=handle_or_url,
+            bio_hint=bio_hint,
+            niche_hint=niche_hint,
+            ig_user_id=ig_user_id,
+            ig_access_token=ig_access_token,
+            enable_network=cfg.smai_enable_network_scout,
+        )
+        analyzer.apply_to_brand(
+            report=report,
+            brand_slug=slug,
+            ig_user_id=ig_user_id,
+            ig_access_token=ig_access_token,
+        )
+        pipeline = SmaiPipeline(cfg, db)
+        await pipeline.run_scout(brand_slug=slug, limit=5)
+        return RedirectResponse(url=f"/?brand={slug}", status_code=303)
 
     @app.post("/actions/scout")
     async def action_scout(brand_slug: str = Form("")) -> RedirectResponse:

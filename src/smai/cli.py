@@ -8,6 +8,7 @@ import json
 import typer
 import uvicorn
 
+from smai.agents.account_analyzer import InstagramAccountAnalyzer
 from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat
@@ -37,6 +38,24 @@ def brands() -> None:
     for slug in list_brand_slugs(settings):
         b = load_brand(slug, settings)
         typer.echo(f"- {slug}: {b.name} ({b.handle}) — {b.niche}")
+
+
+@app.command()
+def analyze(
+    handle: str = typer.Argument(..., help="Instagram @handle or profile URL to analyze."),
+    niche: str = typer.Option("", help="Optional niche hint."),
+    bio: str = typer.Option("", help="Optional current bio text."),
+    brand: str = typer.Option("default", help="Brand slug to update."),
+) -> None:
+    """Analyze an Instagram account, generate an audit report, and auto-tune BrandBrain."""
+    settings = Settings()
+    db = get_database(settings)
+    analyzer = InstagramAccountAnalyzer(settings, db)
+    report = asyncio.run(
+        analyzer.analyze(handle_or_url=handle, bio_hint=bio, niche_hint=niche)
+    )
+    analyzer.apply_to_brand(report, brand_slug=brand)
+    typer.echo(report.model_dump_json(indent=2))
 
 
 @app.command()

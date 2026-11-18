@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import asyncio
 
-from smai.agents import AnalystAgent, CriticAgent, LLMClient, ScoutAgent, WriterAgent
+from smai.agents import (
+    AnalystAgent,
+    CriticAgent,
+    InstagramAccountAnalyzer,
+    LLMClient,
+    ScoutAgent,
+    WriterAgent,
+)
+from smai.agents.account_analyzer import normalize_handle
 from smai.agents.scout import is_duplicate_topic
 from smai.config import Settings, load_brand
 from smai.db.database import get_database
@@ -93,3 +101,29 @@ def test_scout_writer_critic_analyst_flow(tmp_path):
     summary = analyst.build_feedback_summary()
     assert "Stop collecting prompts" in summary
     assert snap.engagement_score > 40.0
+
+
+def test_instagram_account_analyzer(tmp_path):
+    assert normalize_handle("https://www.instagram.com/zakshub.ai/") == "zakshub.ai"
+    assert normalize_handle("@quietleverage.ai") == "quietleverage.ai"
+
+    settings = _temp_settings(tmp_path)
+    db = get_database(settings)
+    analyzer = InstagramAccountAnalyzer(settings, db)
+    report = asyncio.run(
+        analyzer.analyze(
+            handle_or_url="https://instagram.com/zakshub.ai",
+            bio_hint="Helping solo builders automate workflows with AI agents",
+            niche_hint="AI Systems & Automation",
+            enable_network=False,
+        )
+    )
+    assert report.handle == "@zakshub.ai"
+    assert report.audit_score >= 75.0
+    assert len(report.algorithm_gaps) >= 3
+    assert "reel" in report.format_strategy
+
+    db.save_account_audit("default", report.model_dump_json())
+    saved = db.get_latest_account_audit("default")
+    assert saved is not None
+    assert saved["handle"] == "@zakshub.ai"

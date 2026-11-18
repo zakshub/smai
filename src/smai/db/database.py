@@ -132,6 +132,13 @@ CREATE TABLE IF NOT EXISTS agent_runs (
     error_message TEXT DEFAULT '',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_audits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_slug TEXT NOT NULL,
+    report_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -648,6 +655,33 @@ class Database:
                     self.now_iso(),
                 ),
             )
+
+    def save_account_audit(self, brand_slug: str, report_json: str) -> int:
+        with self.connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO account_audits (brand_slug, report_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (brand_slug, report_json, self.now_iso()),
+            )
+            return int(cur.lastrowid)
+
+    def get_latest_account_audit(self, brand_slug: str) -> dict[str, Any] | None:
+        with self.connect() as con:
+            row = con.execute(
+                """
+                SELECT * FROM account_audits
+                WHERE brand_slug = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (brand_slug,),
+            ).fetchone()
+            if not row:
+                return None
+            data = json.loads(row["report_json"])
+            data["captured_at"] = row["created_at"]
+            return data
 
     def dashboard_stats(self) -> dict[str, Any]:
         with self.connect() as con:
