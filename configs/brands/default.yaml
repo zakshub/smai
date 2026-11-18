@@ -1,0 +1,93 @@
+slug: default
+name: Quiet Leverage
+handle: "@quietleverage.ai"
+niche: "AI Systems, Solopreneur Leverage & Digital Productivity"
+audience: "Ambitious builders, freelancers, and creators wanting calm, high-output systems without burnout."
+timezone: "Asia/Karachi"
+
+audience_segments:
+  - name: "Solo Freelancers & Indie Builders"
+    pain_points:
+      - "Drowning in repetitive admin and manual client tasks"
+      - "Overwhelmed by AI hype without practical workflows"
+    preferred_formats: ["carousel", "reel"]
+    peak_hours: [9, 11]
+  - name: "9-to-5 Creators & Side-Hustlers"
+    pain_points:
+      - "Only 60-90 minutes/day after work to build an audience"
+      - "Need fast, saveable checklists and punchy reminders"
+    preferred_formats: ["reel", "single_pic", "text_post"]
+    peak_hours: [19, 22]
+  - name: "Digital Operators & Notion/Automation Nerds"
+    pain_points:
+      - "Want deep system breakdowns, prompts, and mental models"
+    preferred_formats: ["carousel", "text_post", "story"]
+    peak_hours: [14, 16]
+
+regular_cadence:
+  daily_mix: ["reel", "slide_video", "carousel", "single_pic", "text_post", "story"]
+  posts_per_day: 2
+  daily_draft_hour: 8
+  auto_draft_only: true
+
+pillars:
+  - "AI workflow automation that saves 5+ hours/week"
+  - "Mental models for solo leverage and compounding"
+  - "Underrated tools, prompts, and systems breakdown"
+  - "Anti-hustle discipline and deep-work architecture"
+
+tone:
+  voice: "Sharp, calm, editorial, zero hype, concrete numbers over fluff"
+  reading_level: "Grade 7-9 punchy sentences"
+  max_words_per_slide: 28
+  max_reel_seconds: 45
+
+banned_phrases:
+  - "unlock your full potential"
+  - "game changer"
+  - "in today's fast-paced world"
+  - "smash that follow"
+  - "hustle 24/7"
+
+visual_style:
+  carousel_theme: "editorial-dark"
+  primary_color: "#0F172A"
+  accent_color: "#38BDF8"
+  text_color: "#F8FAFC"
+  muted_color: "#94A3B8"
+  font_family: "Inter, system-ui, sans-serif"
+  watermark: "@quietleverage.ai"
+
+cta_bank:
+  - "Save this system before your feed buries it."
+  - "Send this to a builder who still does this manually."
+  - "Bookmark this breakdown and test step 1 today."
+
+hashtags:
+  core:
+    - "#aitools"
+    - "#solopreneur"
+    - "#productivitysystems"
+    - "#digitalleverage"
+    - "#workflowautomation"
+
+scout_sources:
+  rss:
+    - "https://hnrss.org/frontpage"
+  keywords:
+    - "AI workflow automation solopreneur"
+    - "creator productivity systems"
+  subreddits:
+    - "productivity"
+    - "SideProject"
+  seed_topics:
+    - "3-step AI morning brief that replaces 45 minutes of inbox triage"
+    - "Why most automation fails: automating broken steps instead of deleting them"
+    - "The 1-person content engine: turning one deep idea into 5 assets"
+    - "Stop collecting prompts: build repeatable input-output checklists instead"
+    - "How to audit your weekly calendar for hidden low-leverage tasks"
+
+schedule_windows:
+  - [9, 11]
+  - [14, 16]
+  - [19, 22]

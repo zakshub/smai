@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: {{ width }}px;
+      height: {{ height }}px;
+      overflow: hidden;
+      font-family: {{ brand.visual_style.font_family }};
+      {% if theme == 'clean-light' %}
+      background: radial-gradient(circle at 80% 15%, #E0F2FE 0%, #F8FAFC 52%, #E2E8F0 100%);
+      color: #0F172A;
+      {% elif theme == 'bold-gradient' %}
+      background: radial-gradient(circle at 85% 18%, #2563EB 0%, #0F172A 55%, #020617 100%);
+      color: #F8FAFC;
+      {% else %}
+      background: radial-gradient(circle at 82% 20%, rgba(56, 189, 248, 0.22) 0%, {{ brand.visual_style.primary_color }} 48%, #020617 100%);
+      color: {{ brand.visual_style.text_color }};
+      {% endif %}
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 64px 72px;
+      position: relative;
+    }
+    {% if bg_data_uri %}
+    .photo-bg {
+      position: absolute;
+      inset: 0;
+      background-image: url('{{ bg_data_uri }}');
+      background-size: cover;
+      background-position: center;
+      opacity: {% if theme == 'clean-light' %}0.16{% else %}0.36{% endif %};
+      filter: contrast(1.15) saturate(1.15);
+      pointer-events: none;
+    }
+    {% endif %}
+    .grid-bg {
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+      background-size: 72px 72px;
+      pointer-events: none;
+    }
+    .progress-track {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      position: relative;
+      z-index: 2;
+    }
+    .progress-seg {
+      flex: 1;
+      height: 8px;
+      border-radius: 99px;
+      background: rgba(148, 163, 184, 0.25);
+    }
+    .progress-seg.active {
+      background: {{ brand.visual_style.accent_color }};
+      box-shadow: 0 0 16px {{ brand.visual_style.accent_color }};
+    }
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: relative;
+      z-index: 2;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 22px;
+      border-radius: 999px;
+      font-size: 21px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border: 2px solid {{ brand.visual_style.accent_color }};
+      color: {{ brand.visual_style.accent_color }};
+      background: rgba(15, 23, 42, 0.75);
+    }
+    .counter {
+      font-size: 24px;
+      font-weight: 800;
+      opacity: 0.85;
+      letter-spacing: 0.06em;
+    }
+    .glass-card {
+      position: relative;
+      z-index: 2;
+      margin: auto 0;
+      padding: 42px 48px;
+      border-radius: 36px;
+      {% if theme == 'clean-light' %}
+      background: rgba(255, 255, 255, 0.88);
+      border: 2px solid rgba(15, 23, 42, 0.12);
+      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.12);
+      {% else %}
+      background: rgba(10, 16, 31, 0.82);
+      border: 2px solid rgba(56, 189, 248, 0.28);
+      box-shadow: 0 28px 70px rgba(2, 6, 23, 0.78);
+      backdrop-filter: blur(16px);
+      {% endif %}
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .hero-visual {
+      width: 100%;
+      height: 340px;
+      border-radius: 24px;
+      overflow: hidden;
+      position: relative;
+      border: 2px solid rgba(56, 189, 248, 0.35);
+      background: #050811;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .hero-visual img.photo {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.62;
+    }
+    .hero-visual svg {
+      position: relative;
+      z-index: 2;
+    }
+    .stat-pill {
+      align-self: flex-start;
+      background: {{ brand.visual_style.accent_color }};
+      color: #020617;
+      font-size: 23px;
+      font-weight: 900;
+      padding: 8px 20px;
+      border-radius: 12px;
+      letter-spacing: 0.03em;
+    }
+    .headline {
+      font-size: {% if slide.role == 'hook' %}58px{% else %}52px{% endif %};
+      line-height: 1.12;
+      font-weight: 900;
+      letter-spacing: -0.025em;
+    }
+    .body {
+      font-size: 31px;
+      line-height: 1.40;
+      font-weight: 500;
+      opacity: 0.92;
+    }
+    .bullet-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .bullet-item {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 20px;
+      border-radius: 16px;
+      {% if theme == 'clean-light' %}
+      background: rgba(15, 23, 42, 0.06);
+      {% else %}
+      background: rgba(2, 6, 23, 0.65);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      {% endif %}
+      font-size: 27px;
+      font-weight: 600;
+    }
+    .bullet-dot {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: {{ brand.visual_style.accent_color }};
+      color: #020617;
+      font-weight: 900;
+      font-size: 19px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .footer {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 22px;
+      border-top: 2px solid rgba(148, 163, 184, 0.22);
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .swipe {
+      color: {{ brand.visual_style.accent_color }};
+      font-weight: 800;
+      padding: 8px 18px;
+      border-radius: 99px;
+      background: rgba(56, 189, 248, 0.16);
+    }
+  </style>
+</head>
+<body>
+  {% if bg_data_uri %}<div class="photo-bg"></div>{% endif %}
+  <div class="grid-bg"></div>
+
+  <div>
+    <div class="progress-track">
+      {% for i in range(1, total + 1) %}
+        <div class="progress-seg {% if i <= slide.index %}active{% endif %}"></div>
+      {% endfor %}
+    </div>
+    <div class="top-bar">
+      <span class="eyebrow">&#9679; {{ slide.eyebrow or brand.name }}</span>
+      <span class="counter">{{ "%02d" % slide.index }} / {{ "%02d" % total }}</span>
+    </div>
+  </div>
+
+  <div class="glass-card">
+    <div class="hero-visual">
+      {% if bg_data_uri %}
+      <img class="photo" src="{{ bg_data_uri }}" alt="Scene Visual" />
+      {% endif %}
+      {% set vmode = slide.index % 3 %}
+      {% if vmode == 1 %}
+      <svg width="780" height="240" viewBox="0 0 780 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="390" cy="120" r="96" fill="rgba(10,16,31,0.78)" stroke="#38BDF8" stroke-width="4"/>
+        <circle cx="390" cy="120" r="62" stroke="#6366F1" stroke-width="3" stroke-dasharray="10 6"/>
+        <circle cx="390" cy="120" r="22" fill="#38BDF8"/>
+        <circle cx="220" cy="70" r="28" fill="#0F172A" stroke="#22C55E" stroke-width="4"/>
+        <circle cx="560" cy="70" r="28" fill="#0F172A" stroke="#38BDF8" stroke-width="4"/>
+        <circle cx="220" cy="175" r="28" fill="#0F172A" stroke="#6366F1" stroke-width="4"/>
+        <circle cx="560" cy="175" r="28" fill="#0F172A" stroke="#F59E0B" stroke-width="4"/>
+        <path d="M248 78 L330 102 M450 102 L532 78 M248 166 L330 138 M450 138 L532 166" stroke="#38BDF8" stroke-width="4"/>
+      </svg>
+      {% elif vmode == 2 %}
+      <svg width="780" height="240" viewBox="0 0 780 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="70" y="30" width="640" height="180" rx="22" fill="rgba(10,16,31,0.82)" stroke="#38BDF8" stroke-width="3"/>
+        <rect x="130" y="135" width="46" height="50" rx="8" fill="#6366F1"/>
+        <rect x="210" y="110" width="46" height="75" rx="8" fill="#38BDF8"/>
+        <rect x="290" y="82" width="46" height="103" rx="8" fill="#38BDF8"/>
+        <rect x="370" y="58" width="46" height="127" rx="8" fill="#22C55E"/>
+        <path d="M470 155 L530 112 L585 126 L650 64" stroke="#22C55E" stroke-width="7" stroke-linecap="round"/>
+        <circle cx="650" cy="64" r="12" fill="#22C55E"/>
+      </svg>
+      {% else %}
+      <svg width="780" height="240" viewBox="0 0 780 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="50" y="55" width="200" height="130" rx="20" fill="rgba(10,16,31,0.85)" stroke="#38BDF8" stroke-width="4"/>
+        <circle cx="150" cy="120" r="32" fill="#38BDF8"/>
+        <path d="M255 120 L305 120" stroke="#22C55E" stroke-width="6" stroke-dasharray="10 6"/>
+        <rect x="310" y="55" width="200" height="130" rx="20" fill="rgba(10,16,31,0.85)" stroke="#6366F1" stroke-width="4"/>
+        <rect x="360" y="95" width="100" height="50" rx="10" fill="#6366F1"/>
+        <path d="M515 120 L565 120" stroke="#22C55E" stroke-width="6" stroke-dasharray="10 6"/>
+        <rect x="570" y="55" width="160" height="130" rx="20" fill="rgba(10,16,31,0.85)" stroke="#22C55E" stroke-width="4"/>
+        <path d="M625 122 L645 142 L685 98" stroke="#22C55E" stroke-width="8" stroke-linecap="round"/>
+      </svg>
+      {% endif %}
+    </div>
+
+    {% if slide.accent_stat %}
+    <div class="stat-pill">{{ slide.accent_stat }}</div>
+    {% endif %}
+
+    <h1 class="headline">{{ slide.headline }}</h1>
+
+    {% if slide.body %}
+    <p class="body">{{ slide.body }}</p>
+    {% endif %}
+
+    {% if slide.bullets %}
+    <div class="bullet-list">
+      {% for b in slide.bullets[:3] %}
+      <div class="bullet-item">
+        <span class="bullet-dot">{{ loop.index }}</span>
+        <span>{{ b }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="footer">
+    <span>{{ brand.visual_style.watermark }}</span>
+    <span class="swipe">{% if slide.index < total %}SWIPE &rarr;{% else %}SAVE &amp; SHARE{% endif %}</span>
+  </div>
+</body>
+</html>
