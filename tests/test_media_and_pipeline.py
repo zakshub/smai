@@ -85,8 +85,10 @@ def test_end_to_end_carousel_and_reel_pipeline(tmp_path: Path):
     with Image.open(first_png) as im:
         assert im.size == (1080, 1350)
 
-    # Export bundle
-    pub_res = asyncio.run(pipeline.publish_draft(draft_id, mode="export"))
+    # Approve then export bundle (export no longer marks draft as published)
+    pipeline.approve_draft(draft_id)
+    pub_res = asyncio.run(pipeline.export_draft(draft_id))
+    assert pub_res["draft"]["approval_status"] == "exported"
     export_dir = Path(pub_res["export_path"])
     assert (export_dir / "caption.txt").exists()
     assert (export_dir / "metadata.json").exists()
@@ -116,7 +118,7 @@ def test_full_5_step_draft_cycle_all_formats(tmp_path: Path):
 
     for item in results:
         draft = item["draft"]
-        assert draft["approval_status"] == "pending"
+        assert draft["approval_status"] == "pending_approval"
         assert draft["target_audience"]
         assert draft["recommended_time"]
         assert draft["algorithm_rationale"]
@@ -155,8 +157,9 @@ def test_fastapi_dashboard_and_approval_routes(tmp_path: Path):
         approve_resp = client.post(f"/drafts/{draft_id}/approve", follow_redirects=False)
         assert approve_resp.status_code == 303
 
-        pub_resp = client.post(f"/drafts/{draft_id}/publish", follow_redirects=False)
-        assert pub_resp.status_code == 303
+        export_resp = client.post(f"/drafts/{draft_id}/export", follow_redirects=False)
+        assert export_resp.status_code == 303
+        assert client.get("/api/drafts").json()[0]["approval_status"] == "exported"
 
         ins_resp = client.post(
             "/insights/record",
@@ -164,6 +167,10 @@ def test_fastapi_dashboard_and_approval_routes(tmp_path: Path):
             follow_redirects=False,
         )
         assert ins_resp.status_code == 303
+
+        assert client.get("/api/insights").status_code == 200
+        assert client.get("/api/experiments").status_code == 200
+        assert client.get("/api/account-intelligence").status_code == 200
 
         home = client.get("/")
         assert home.status_code == 200

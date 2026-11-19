@@ -11,10 +11,15 @@ import uvicorn
 from smai.agents.account_analyzer import InstagramAccountAnalyzer
 from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
-from smai.db.models import ContentFormat
+from smai.db.models import (
+    ApprovalRequiredError,
+    ContentFormat,
+    CycleMode,
+    DuplicatePublishError,
+    InvalidStateTransitionError,
+)
 from smai.pipeline import SmaiPipeline
 from smai.publishing import (
-    DuplicatePublishError,
     InstagramBrowserAutomator,
     InstagramGraphClient,
     MetaAPIError,
@@ -144,11 +149,14 @@ def generate(
 def cycle(
     brand: str = typer.Option("default", help="Brand config slug."),
     dry_run_reel: bool = typer.Option(False, help="Skip FFmpeg encoding for fast Reel dry runs."),
-    autopilot: bool = typer.Option(
-        False, help="Auto-approve, schedule into regular peak windows, and export bundles."
+    cycle_mode: CycleMode = typer.Option(
+        "draft_only", help="draft_only | export_review | auto_schedule"
+    ),
+    approve_qa_passed: bool = typer.Option(
+        False, help="Explicitly approve QA-passed drafts before export_review/auto_schedule."
     ),
 ) -> None:
-    """Run full 5-step cycle (Research -> Suggest -> Audience/Time -> All Formats -> Drafts/Autopilot)."""
+    """Run research-to-draft cycle cleanly without mixing scheduling and immediate publish/export."""
     settings = Settings()
     db = get_database(settings)
     pipeline = SmaiPipeline(settings, db)
@@ -156,7 +164,8 @@ def cycle(
         pipeline.run_full_draft_cycle(
             brand_slug=brand,
             dry_run_reel=dry_run_reel,
-            auto_schedule_and_export=autopilot,
+            cycle_mode=cycle_mode,
+            approve_qa_passed=approve_qa_passed,
         )
     )
     summary = [
@@ -164,9 +173,9 @@ def cycle(
             "draft_id": r["draft"]["id"],
             "format": r["draft"]["format"],
             "title": r["draft"]["title"],
-            "target_audience": r["draft"]["target_audience"],
-            "recommended_time": r["draft"]["recommended_time"],
+            "approval_status": r["draft"]["approval_status"],
             "qa_status": r["qa"]["status"],
+            "cycle_note": r.get("cycle_note", ""),
         }
         for r in results
     ]
@@ -174,18 +183,252 @@ def cycle(
 
 
 @app.command()
-def publish(
-    draft_id: int = typer.Argument(..., help="Draft ID to publish or export."),
-    mode: str = typer.Option("", help="Override mode: export | browser | browser_share | graph_api"),
-) -> None:
-    """Publish via Meta Graph API or export a local bundle."""
+def approve(draft_id: int = typer.Argument(..., help="Draft ID to approve.")) -> None:
+    """Explicitly approve a draft for export, scheduling, staging, or publishing."""
     settings = Settings()
     db = get_database(settings)
     pipeline = SmaiPipeline(settings, db)
     try:
-        res = asyncio.run(pipeline.publish_draft(draft_id, mode=mode or None))
+        updated = pipeline.approve_draft(draft_id)
+        typer.echo(json.dumps({"id": updated["id"], "approval_status": updated["approval_status"]}, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def reject(draft_id: int = typer.Argument(..., help="Draft ID to reject.")) -> None:
+    """Reject a draft and cancel any active queued schedules."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        updated = pipeline.reject_draft(draft_id)
+        typer.echo(json.dumps({"id": updated["id"], "approval_status": updated["approval_status"]}, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def reopen(
+    draft_id: int = typer.Argument(..., help="Draft ID to reopen."),
+    status: str = typer.Option("pending_approval", help="Target status: draft | pending_approval | approved"),
+) -> None:
+    """Reopen a rejected, failed, or staged draft (never published)."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        updated = pipeline.reopen_draft(draft_id, target_status=status)
+        typer.echo(json.dumps({"id": updated["id"], "approval_status": updated["approval_status"]}, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("export")
+def export_cmd(draft_id: int = typer.Argument(..., help="Approved draft ID to export.")) -> None:
+    """Export a local media + caption bundle without marking published."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = asyncio.run(pipeline.export_draft(draft_id))
+        typer.echo(json.dumps({"publish_log_id": res["publish_log_id"], "export_path": res["export_path"], "approval_status": res["draft"]["approval_status"]}, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def schedule(
+    draft_id: int = typer.Argument(..., help="Approved draft ID to schedule."),
+    at: str = typer.Option("", help="Optional ISO-8601 timestamp; defaults to next jittered window."),
+) -> None:
+    """Schedule an approved draft into a posting window."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = pipeline.schedule_draft(draft_id, scheduled_for=at.strip() or None)
+        typer.echo(json.dumps({"schedule_id": res["schedule_id"], "scheduled_for": res["scheduled_for"], "approval_status": res["draft"]["approval_status"]}, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("cancel-schedule")
+def cancel_schedule_cmd(schedule_id: int = typer.Argument(..., help="Queued schedule ID to cancel.")) -> None:
+    """Cancel a queued schedule and restore draft status."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = pipeline.cancel_schedule(schedule_id)
         typer.echo(json.dumps(res, indent=2))
-    except (DuplicatePublishError, MetaAPIError, ValueError, RuntimeError) as exc:
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def stage(draft_id: int = typer.Argument(..., help="Approved draft ID to stage in IG Web Composer.")) -> None:
+    """Stage media and caption in Instagram browser composer (records 'staged', awaiting confirmation)."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = asyncio.run(pipeline.stage_in_browser(draft_id))
+        typer.echo(json.dumps(res, indent=2, default=str))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("confirm-publish")
+def confirm_publish_cmd(
+    draft_id: int = typer.Argument(..., help="Staged draft ID to confirm as manually shared."),
+    media_id: str = typer.Option("", help="Optional IG media ID."),
+    permalink: str = typer.Option("", help="Optional Instagram post URL."),
+) -> None:
+    """Confirm a staged browser upload was shared manually by the operator."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = pipeline.confirm_staged_publish(draft_id, ig_media_id=media_id, permalink=permalink)
+        typer.echo(json.dumps(res, indent=2, default=str))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def publish(
+    draft_id: int = typer.Argument(..., help="Approved draft ID to publish live."),
+    mode: str = typer.Option("", help="Override live mode: graph_api | browser_share"),
+    skip_url_check: bool = typer.Option(False, help="Skip HEAD/GET public media preflight check."),
+) -> None:
+    """Publish an approved draft via live Meta Graph API or confirmed browser_share."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = asyncio.run(
+            pipeline.publish_draft(
+                draft_id,
+                mode=mode or None,
+                verify_public_media=not skip_url_check,
+            )
+        )
+        typer.echo(json.dumps(res, indent=2))
+    except (
+        ApprovalRequiredError,
+        DuplicatePublishError,
+        InvalidStateTransitionError,
+        MetaAPIError,
+        ValueError,
+        RuntimeError,
+    ) as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("insights-sync")
+def insights_sync_cmd(window_days: int = typer.Option(1, help="Account insights lookback days.")) -> None:
+    """Sync live Meta Graph API v27.0 account & published media insights."""
+    settings = Settings()
+    if not settings.has_meta_credentials():
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": False,
+                    "blocked": "Missing IG_ACCESS_TOKEN or IG_USER_ID in environment/.env.",
+                },
+                indent=2,
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    db = get_database(settings)
+    client = InstagramGraphClient(settings)
+    pipeline = SmaiPipeline(settings, db, graph_client=client)
+    try:
+        acct = asyncio.run(client.fetch_account_insights_safe(window_days=window_days))
+        db.insert_account_insight(acct)
+        media_synced = 0
+        for row in db.list_publish_logs(limit=15):
+            if row.get("outcome") != "published" or not row.get("ig_media_id"):
+                continue
+            fmt = str(row.get("draft_format") or "").lower()
+            prod = "REELS" if fmt in ("reel", "slide_video") else ("STORY" if fmt == "story" else "FEED")
+            snap = asyncio.run(
+                client.fetch_media_insights_safe(
+                    str(row["ig_media_id"]), media_product_type=prod, horizon_hours=24
+                )
+            )
+            pipeline.analyst.record_snapshot(int(row["id"]), snap)
+            media_synced += 1
+        typer.echo(json.dumps({"ok": True, "media_synced": media_synced, "account": acct.model_dump()}, indent=2))
+    except MetaAPIError as exc:
+        typer.echo(json.dumps({"ok": False, "error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("experiment-create")
+def experiment_create_cmd(
+    name: str = typer.Option(..., help="Experiment name."),
+    hypothesis: str = typer.Option(..., help="Test hypothesis."),
+    variable: str = typer.Option(..., help="Single variable tested (e.g. hook_type)."),
+    control: str = typer.Option(..., help="Control variant value."),
+    treatment: str = typer.Option(..., help="Treatment variant value."),
+    metric: str = typer.Option("engagement_score", help="Primary metric."),
+    min_sample: int = typer.Option(5, help="Minimum samples per arm before declaring non-exploratory winner."),
+) -> None:
+    """Create a single-variable control-vs-treatment Growth Experiment."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    exp_id = pipeline.analyst.create_experiment(
+        name=name,
+        hypothesis=hypothesis,
+        variable_name=variable,
+        control_value=control,
+        treatment_value=treatment,
+        primary_metric=metric,
+        min_sample_per_arm=min_sample,
+    )
+    typer.echo(json.dumps({"experiment_id": exp_id, "name": name}, indent=2))
+
+
+@app.command("experiment-eval")
+def experiment_eval_cmd(
+    experiment_id: int = typer.Argument(..., help="Experiment ID to evaluate."),
+    horizon_hours: int = typer.Option(24, help="Insight horizon (24 or 72)."),
+) -> None:
+    """Deterministically evaluate a Growth Experiment (requires explicit operator approval before promotion)."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = pipeline.analyst.evaluate_experiment(experiment_id, horizon_hours=horizon_hours)
+        typer.echo(json.dumps(res, indent=2))
+    except Exception as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("learning-approve")
+def learning_approve_cmd(learning_id: int = typer.Argument(..., help="Experiment learning ID to promote.")) -> None:
+    """Approve an experiment learning so it informs future content generation."""
+    settings = Settings()
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    try:
+        res = pipeline.analyst.promote_learning(learning_id)
+        typer.echo(json.dumps(res, indent=2))
+    except Exception as exc:
         typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
         raise typer.Exit(code=1)
 

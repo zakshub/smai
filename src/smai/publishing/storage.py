@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import quote
+
+import httpx
 
 from smai.config import Settings
 
@@ -33,3 +36,81 @@ class MediaStagingService:
         except ValueError:
             rel = resolved.name
         return f"{base}/{quote(rel)}"
+
+    async def verify_public_url_reachable(
+        self,
+        url: str,
+        timeout_sec: float = 10.0,
+        expected_prefix: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Verify a staged media URL uses HTTPS and serves HTTP 200/206 with an image/* or video/* Content-Type.
+        Uses HEAD first and falls back to a bounded Range GET on HTTP 405/501.
+        """
+        cleaned = (url or "").strip()
+        if not cleaned.lower().startswith("https://"):
+            return {
+                "ok": False,
+                "url": cleaned,
+                "status_code": None,
+                "content_type": "",
+                "method": "PRECHECK",
+                "reason": "Public media URL must use https:// for Meta Instagram Graph API fetching.",
+            }
+
+        allowed_prefixes = (expected_prefix,) if expected_prefix else ("image/", "video/")
+        try:
+            async with httpx.AsyncClient(timeout=timeout_sec, follow_redirects=True) as client:
+                method = "HEAD"
+                resp = await client.head(cleaned)
+                if resp.status_code in {405, 501}:
+                    method = "GET"
+                    async with client.stream(
+                        "GET", cleaned, headers={"Range": "bytes=0-1023"}
+                    ) as stream_resp:
+                        status_code = stream_resp.status_code
+                        content_type = stream_resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                else:
+                    status_code = resp.status_code
+                    content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        except httpx.HTTPError as exc:
+            return {
+                "ok": False,
+                "url": cleaned,
+                "status_code": None,
+                "content_type": "",
+                "method": "HEAD",
+                "reason": f"Public media URL is not reachable: {exc}",
+            }
+
+        if status_code not in {200, 206}:
+            return {
+                "ok": False,
+                "url": cleaned,
+                "status_code": status_code,
+                "content_type": content_type,
+                "method": method,
+                "reason": f"Public media URL returned HTTP {status_code} (expected 200 or 206).",
+            }
+
+        if not any(content_type.startswith(prefix) for prefix in allowed_prefixes):
+            return {
+                "ok": False,
+                "url": cleaned,
+                "status_code": status_code,
+                "content_type": content_type,
+                "method": method,
+                "reason": (
+                    f"Public media URL returned unexpected Content-Type '{content_type or 'missing'}' "
+                    f"(expected {', '.join(allowed_prefixes)})."
+                ),
+            }
+
+        return {
+            "ok": True,
+            "url": cleaned,
+            "status_code": status_code,
+            "content_type": content_type,
+            "method": method,
+            "reason": "Public HTTPS media URL verified reachable.",
+        }

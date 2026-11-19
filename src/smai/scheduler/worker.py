@@ -13,8 +13,14 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from smai.config import Settings, load_brand
 from smai.db.database import Database
+from smai.db.models import (
+    ApprovalRequiredError,
+    DuplicatePublishError,
+    InvalidStateTransitionError,
+    normalize_approval_status,
+)
 from smai.pipeline import SmaiPipeline
-from smai.publishing import DuplicatePublishError, InstagramGraphClient, MetaAPIError
+from smai.publishing import InstagramGraphClient, MetaAPIError, redact_secret
 
 
 def pick_next_window_slot(
@@ -101,23 +107,53 @@ class SchedulerWorker:
         return len(results)
 
     def poll_due_insights(self) -> int:
-        """Fetch live IG Graph API insights for recently published posts when configured."""
-        if self.settings.smai_publish_mode.lower() != "graph_api":
+        """Fetch live IG Graph API v27.0 account & 24h/72h media insights when credentials exist."""
+        if not self.settings.has_meta_credentials():
             return 0
         client = InstagramGraphClient(self.settings)
-        pipeline = SmaiPipeline(self.settings, self.db)
-        logs = self.db.list_publish_logs(limit=10)
+        pipeline = SmaiPipeline(self.settings, self.db, graph_client=client)
+        now = datetime.now(self.tz)
         captured = 0
-        for row in logs:
-            media_id = row.get("ig_media_id")
-            if not media_id:
-                continue
-            try:
-                snap = asyncio.run(client.fetch_insights(media_id, horizon_hours=24))
-                pipeline.analyst.record_snapshot(int(row["id"]), snap)
-                captured += 1
-            except Exception:
-                continue
+
+        try:
+            acct = asyncio.run(client.fetch_account_insights_safe(window_days=1))
+            self.db.insert_account_insight(acct)
+        except Exception:
+            pass
+
+        for horizon in (24, 72):
+            targets = self.db.list_due_insight_targets(horizon_hours=horizon, limit=20)
+            for row in targets:
+                media_id = str(row.get("ig_media_id") or "").strip()
+                if not media_id:
+                    continue
+                try:
+                    pub_dt = datetime.fromisoformat(str(row["published_at"]))
+                    if pub_dt.tzinfo is None:
+                        pub_dt = pub_dt.replace(tzinfo=self.tz)
+                    if (now - pub_dt) < timedelta(hours=horizon):
+                        continue
+                except Exception:
+                    pass
+
+                fmt = str(row.get("draft_format") or "").lower()
+                product_type = (
+                    "REELS"
+                    if fmt in ("reel", "slide_video")
+                    else ("STORY" if fmt == "story" else "FEED")
+                )
+                try:
+                    snap = asyncio.run(
+                        client.fetch_media_insights_safe(
+                            media_id,
+                            media_product_type=product_type,
+                            horizon_hours=horizon,
+                        )
+                    )
+                    pipeline.analyst.record_snapshot(int(row["id"]), snap)
+                    captured += 1
+                except Exception:
+                    continue
         return captured
 
     def process_due_schedules(self) -> int:
@@ -125,6 +161,7 @@ class SchedulerWorker:
         queued = self.db.list_schedules(status="queued", limit=20)
         processed = 0
         pipeline = SmaiPipeline(self.settings, self.db)
+        mode = self.settings.smai_publish_mode.lower().strip()
 
         for row in queued:
             scheduled_dt = datetime.fromisoformat(row["scheduled_for"])
@@ -135,12 +172,42 @@ class SchedulerWorker:
 
             schedule_id = int(row["id"])
             draft_id = int(row["draft_id"])
+            draft = self.db.get_draft(draft_id)
+            if not draft:
+                self.db.update_schedule_status(
+                    schedule_id,
+                    "failed",
+                    last_error=f"Draft {draft_id} not found.",
+                    increment_attempts=True,
+                )
+                continue
+
+            cur_status = normalize_approval_status(str(draft["approval_status"]))
+            if cur_status != "scheduled":
+                self.db.update_schedule_status(
+                    schedule_id,
+                    "failed",
+                    last_error=(
+                        f"Blocked execution: draft {draft_id} status is '{cur_status}' "
+                        "(must be 'scheduled' after explicit approval)."
+                    ),
+                    increment_attempts=True,
+                )
+                continue
+
             self.db.update_schedule_status(schedule_id, "running")
             try:
-                asyncio.run(pipeline.publish_draft(draft_id))
-                self.db.update_schedule_status(schedule_id, "completed")
+                if mode == "export":
+                    asyncio.run(pipeline.export_draft(draft_id))
+                    self.db.update_schedule_status(schedule_id, "completed")
+                elif mode == "browser":
+                    asyncio.run(pipeline.stage_in_browser(draft_id))
+                    self.db.update_schedule_status(schedule_id, "staged")
+                else:
+                    asyncio.run(pipeline.publish_draft(draft_id, mode=mode))
+                    self.db.update_schedule_status(schedule_id, "completed")
                 processed += 1
-            except DuplicatePublishError as exc:
+            except (ApprovalRequiredError, DuplicatePublishError, InvalidStateTransitionError) as exc:
                 self.db.update_schedule_status(
                     schedule_id,
                     "failed",
@@ -150,19 +217,21 @@ class SchedulerWorker:
             except MetaAPIError as exc:
                 attempts = int(row["attempts"]) + 1
                 next_status = "queued" if (exc.is_transient and attempts < 3) else "failed"
+                diag = redact_secret(str(exc), self.settings.ig_access_token)
                 self.db.update_schedule_status(
                     schedule_id,
                     next_status,
-                    last_error=str(exc),
+                    last_error=diag,
                     increment_attempts=True,
                 )
             except Exception as exc:
                 attempts = int(row["attempts"]) + 1
                 next_status = "failed" if attempts >= 3 else "queued"
+                diag = redact_secret(str(exc), self.settings.ig_access_token)
                 self.db.update_schedule_status(
                     schedule_id,
                     next_status,
-                    last_error=str(exc),
+                    last_error=diag,
                     increment_attempts=True,
                 )
         return processed

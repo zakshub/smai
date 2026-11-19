@@ -233,7 +233,11 @@ class InstagramBrowserAutomator:
                     "files_uploaded": valid_files,
                     "caption_filled": caption_filled,
                     "auto_shared": shared,
-                    "status": "shared" if shared else "staged_in_ig_composer",
+                    "status": (
+                        "confirmed_shared"
+                        if (auto_share and shared)
+                        else "staged_awaiting_confirmation"
+                    ),
                 }
             finally:
                 await context.close()

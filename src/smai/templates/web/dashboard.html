@@ -132,9 +132,11 @@
     .pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); }
     .pill.pass { color: var(--good); }
     .pill.revise { color: var(--warn); }
-    .pill.approved { color: var(--good); }
-    .pill.published { color: var(--accent); }
-    .pill.rejected { color: var(--bad); }
+    .pill.draft, .pill.pending_approval, .pill.pending { color: var(--warn); }
+    .pill.approved, .pill.exported { color: var(--good); }
+    .pill.scheduled, .pill.staged, .pill.publishing { color: var(--accent); }
+    .pill.published { color: var(--accent); border: 1px solid var(--accent); }
+    .pill.rejected, .pill.failed { color: var(--bad); }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
     .side-card {
       background: var(--panel);
@@ -171,15 +173,28 @@
       <span class="badge">Meta API ({{ meta_graph_version }}): {% if meta_api_configured %}&#10003; ID {{ meta_ig_user_id }}{% else %}Not Configured{% endif %}</span>
       <span class="badge">IG Browser: {% if ig_browser_connected %}&#10003; Session Saved{% else %}Not Logged In{% endif %}</span>
       <span class="badge">Publish: {{ publish_mode }}</span>
+      <span class="badge">Media URL: {{ public_media_url or 'Not Configured' }}</span>
+      <a href="/api/meta/status" target="_blank" class="badge" style="text-decoration:none;">Check Meta Health &nearr;</a>
     </div>
   </header>
 
   <main>
+    {% if notice %}
+    <section class="side-card" style="margin-bottom:0; border-color:var(--good); background:rgba(34,197,94,0.1);">
+      <strong style="color:var(--good);">Done:</strong> {{ notice }}
+    </section>
+    {% endif %}
+    {% if error %}
+    <section class="side-card" style="margin-bottom:0; border-color:var(--bad); background:rgba(239,68,68,0.12);">
+      <strong style="color:var(--bad);">Error:</strong> {{ error }}
+    </section>
+    {% endif %}
+
     <section class="side-card" style="margin-bottom:0; border-color:var(--accent); background:linear-gradient(90deg, rgba(56,189,248,0.10), rgba(15,23,42,0.95));">
       <div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:12px; align-items:center;">
         <div>
-          <strong style="color:var(--good);">&#9679; FULL AUTO-PILOT ENGINE: ACTIVE</strong>
-          <span style="color:var(--muted); font-size:13px;">(Auto-researches trends, generates Videos + Animations + Images, runs QA, schedules &amp; exports)</span>
+          <strong style="color:var(--accent);">&#9679; OPERATOR-GOVERNED STUDIO · V2 STATE MACHINE</strong>
+          <span style="color:var(--muted); font-size:13px;">(Drafts require explicit Approval before Export, Schedule, Browser Stage, or Meta Graph API Publish)</span>
         </div>
         <a href="https://github.com/zakshub/smai" target="_blank" style="color:var(--accent); font-weight:700; font-size:13px; text-decoration:none;">GitHub: github.com/zakshub/smai &nearr;</a>
       </div>
@@ -214,74 +229,66 @@
       <div style="margin-top:14px; padding:14px; border-radius:12px; background:var(--bg); border:1px solid var(--border);">
         <div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; margin-bottom:8px;">
           <div>
-            <strong style="color:var(--accent); font-size:15px;">Instagram Audit: {{ account_audit.handle }} ({{ account_audit.display_name }})</strong>
-            <span class="pill pass" style="margin-left:8px;">Audit Score: {{ account_audit.audit_score }} / 100</span>
-            <span class="pill" style="margin-left:4px;">Source: {{ account_audit.data_source }}</span>
+            <strong style="color:var(--accent); font-size:15px;">Account Intelligence: {{ account_audit.handle }} ({{ account_audit.display_name }})</strong>
+            <span class="pill" style="margin-left:8px;">Observed Source: {{ account_audit.data_source }}</span>
+            {% if account_audit.captured_at %}<span class="pill" style="margin-left:4px;">Captured: {{ account_audit.captured_at[:19] }}</span>{% endif %}
           </div>
-          <span style="font-size:12px; color:var(--muted);">Detected Niche: <strong>{{ account_audit.detected_niche }}</strong></span>
+          <span style="font-size:12px; color:var(--muted);">Heuristic Audit Score: <strong>{{ account_audit.audit_score }} / 100</strong></span>
         </div>
-        <p style="font-size:13px; color:#cbd5e1; margin:0 0 6px;">{{ account_audit.bio_diagnosis }}</p>
-        {% if account_audit.existing_content_summary %}
-        <p style="font-size:13px; color:var(--accent); margin:0 0 10px;"><strong>Existing Profile Content Analysis:</strong> {{ account_audit.existing_content_summary }}</p>
-        {% endif %}
-        {% if account_audit.report_markdown_path %}
-        <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
-          <strong>Full Markdown Audit Report Saved At:</strong> <code>{{ account_audit.report_markdown_path }}</code>
-        </div>
-        {% endif %}
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; font-size:12px;">
-          {% if account_audit.top_performing_posts %}
-          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
-            <strong style="color:var(--accent);">Top Performing Existing Posts on Profile:</strong>
+
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; font-size:12px; margin-bottom:10px;">
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--good);">
+            <strong style="color:var(--good);">1. Verified Observed Data (Null when unobserved)</strong>
+            <div style="margin-top:6px; color:#cbd5e1;">
+              <div><strong>Followers:</strong> {{ account_audit.followers_count if account_audit.followers_count is not none else 'Not observed (null)' }} &middot; <strong>Posts:</strong> {{ account_audit.media_count if account_audit.media_count is not none else 'Not observed (null)' }}</div>
+              <div><strong>Avg Likes:</strong> {{ account_audit.avg_likes if account_audit.avg_likes is not none else 'N/A' }} &middot; <strong>Avg Comments:</strong> {{ account_audit.avg_comments if account_audit.avg_comments is not none else 'N/A' }}</div>
+              <p style="margin:6px 0 0; color:var(--muted);">{{ account_audit.existing_content_summary or account_audit.bio_diagnosis }}</p>
+            </div>
+          </div>
+
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--accent);">
+            <strong style="color:var(--accent);">2. Heuristic Inferences (Sample Size &amp; Confidence)</strong>
             <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
-              {% for p in account_audit.top_performing_posts[:4] %}
+              {% for inf in account_audit.inferred_heuristic or [] %}
                 <li style="margin-bottom:4px;">
-                  <strong>[{{ p.media_type }}]</strong> {{ p.likes }} likes, {{ p.comments }} comments{% if p.plays %}, {{ p.plays }} plays{% endif %} ({{ p.posted_at or 'recent' }}) &mdash;
-                  <em>"{{ p.caption_excerpt[:55] }}..."</em>
-                  {% if p.permalink %}<a href="{{ p.permalink }}" target="_blank" style="color:var(--accent);">View &nearr;</a>{% endif %}
+                  <strong>{{ inf.signal }}:</strong> {{ inf.value }}
+                  <span style="color:var(--accent);">[n={{ inf.sample_size }}, conf={{ inf.confidence }}]</span>
                 </li>
+              {% else %}
+                <li>Detected Niche: {{ account_audit.detected_niche }}</li>
               {% endfor %}
             </ul>
           </div>
-          {% endif %}
-          {% if account_audit.best_posting_windows_from_history %}
-          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
-            <strong style="color:var(--good);">Best Posting Times (From Your Profile History):</strong>
+
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--warn);">
+            <strong style="color:var(--warn);">3. AI / Strategy Recommendations (Suggestions Only)</strong>
             <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
-              {% for w in account_audit.best_posting_windows_from_history %}
-                <li style="margin-bottom:4px;">{{ w }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
-            <strong style="color:var(--warn);">Algorithm Growth Gaps to Fix:</strong>
-            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
-              {% for gap in account_audit.algorithm_gaps %}
+              {% for gap in account_audit.algorithm_gaps[:4] %}
                 <li style="margin-bottom:4px;">{{ gap }}</li>
               {% endfor %}
             </ul>
           </div>
-          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
-            <strong style="color:var(--good);">Recommended Content Mix Strategy:</strong>
-            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
-              {% for fmt_k, strat in account_audit.format_strategy.items() %}
-                <li style="margin-bottom:4px;"><strong>{{ fmt_k|upper }}:</strong> {{ strat }}</li>
-              {% endfor %}
-            </ul>
-          </div>
         </div>
+
+        {% if account_audit.report_markdown_path %}
+        <div style="font-size:12px; color:var(--muted);">
+          <strong>Markdown Intelligence Report:</strong> <code>{{ account_audit.report_markdown_path }}</code>
+        </div>
+        {% endif %}
       </div>
       {% endif %}
     </section>
 
     <section class="kpis">
       <div class="kpi"><div class="kpi-label">New Topics</div><div class="kpi-val">{{ stats.topics_new }}</div></div>
-      <div class="kpi"><div class="kpi-label">Pending Review</div><div class="kpi-val">{{ stats.pending }}</div></div>
+      <div class="kpi"><div class="kpi-label">Drafts / Review</div><div class="kpi-val">{{ stats.pending_approval }}</div></div>
       <div class="kpi"><div class="kpi-label">Approved</div><div class="kpi-val">{{ stats.approved }}</div></div>
+      <div class="kpi"><div class="kpi-label">Exported</div><div class="kpi-val">{{ stats.exported }}</div></div>
       <div class="kpi"><div class="kpi-label">Scheduled</div><div class="kpi-val">{{ stats.queued_schedules }}</div></div>
+      <div class="kpi"><div class="kpi-label">Staged</div><div class="kpi-val">{{ stats.staged }}</div></div>
       <div class="kpi"><div class="kpi-label">Published</div><div class="kpi-val">{{ stats.published }}</div></div>
-      <div class="kpi"><div class="kpi-label">Avg Save Score</div><div class="kpi-val">{{ stats.avg_engagement_score }}</div></div>
+      <div class="kpi"><div class="kpi-label">Failed</div><div class="kpi-val">{{ stats.failed }}</div></div>
+      <div class="kpi"><div class="kpi-label">Avg Save Score</div><div class="kpi-val">{{ stats.avg_engagement_score if stats.avg_engagement_score is not none else 'N/A' }}</div></div>
     </section>
 
     <section class="toolbar">
@@ -291,12 +298,11 @@
       </form>
       <form method="post" action="/actions/cycle">
         <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
-        <input type="hidden" name="autopilot" value="1" />
-        <button type="submit" class="good">Full Auto-Pilot Run (Research &rarr; Video + Animation + Image &rarr; Schedule &amp; Export)</button>
+        <input type="hidden" name="cycle_mode" value="draft_only" />
+        <button type="submit" class="good">Create All Formats in Pending Review</button>
       </form>
-      <form method="post" action="/actions/cycle">
-        <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
-        <button type="submit" class="secondary">Auto-Create All 6 in Drafts</button>
+      <form method="post" action="/actions/insights-sync">
+        <button type="submit" class="secondary">Sync Meta v27.0 Insights</button>
       </form>
       <form method="post" action="/actions/generate" style="flex:1;">
         <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
@@ -389,30 +395,69 @@
             {% endif %}
 
             <form method="post" action="/drafts/{{ draft.id }}/caption">
-              <textarea name="caption" rows="5" style="width:100%;">{{ draft.caption }}</textarea>
+              <textarea name="caption" rows="5" style="width:100%;" {% if draft.approval_status == 'published' %}readonly{% endif %}>{{ draft.caption }}</textarea>
+              {% if draft.approval_status != 'published' %}
               <div class="actions">
                 <button type="submit" class="secondary">Save Caption</button>
               </div>
+              {% endif %}
             </form>
 
+            {% if draft.last_publish_error %}
+            <div style="margin-top:10px; padding:8px 10px; border-radius:8px; border:1px solid var(--bad); background:rgba(239,68,68,0.12); font-size:12px; color:#fecaca;">
+              <strong>Last Publish Error ({{ draft.last_error_at or 'recent' }}):</strong> {{ draft.last_publish_error }}
+            </div>
+            {% endif %}
+
             <div class="actions">
-              <form method="post" action="/drafts/{{ draft.id }}/ig-browser">
-                <input type="hidden" name="auto_share" value="0" />
-                <button type="submit" style="background:#E1306C; color:#fff;">Test Live on Instagram (Open Browser &amp; Upload Draft)</button>
-              </form>
-              <form method="post" action="/drafts/{{ draft.id }}/ig-browser">
-                <input type="hidden" name="auto_share" value="1" />
-                <button type="submit" class="good">Auto-Post Live on Instagram Now</button>
-              </form>
-              <form method="post" action="/drafts/{{ draft.id }}/approve">
-                <button type="submit" class="secondary">Approve &amp; Schedule</button>
-              </form>
-              <form method="post" action="/drafts/{{ draft.id }}/publish">
-                <button type="submit" class="secondary">Export Local Bundle</button>
-              </form>
-              <form method="post" action="/drafts/{{ draft.id }}/reject">
-                <button type="submit" class="bad">Reject</button>
-              </form>
+              {% if draft.approval_status in ('draft', 'pending_approval') %}
+                <form method="post" action="/drafts/{{ draft.id }}/approve">
+                  <button type="submit" class="good">Approve Draft</button>
+                </form>
+                <form method="post" action="/drafts/{{ draft.id }}/reject">
+                  <button type="submit" class="bad">Reject</button>
+                </form>
+              {% elif draft.approval_status in ('rejected', 'failed') %}
+                <form method="post" action="/drafts/{{ draft.id }}/reopen">
+                  <input type="hidden" name="target_status" value="pending_approval" />
+                  <button type="submit" class="secondary">Reopen to Review</button>
+                </form>
+                <form method="post" action="/drafts/{{ draft.id }}/reopen">
+                  <input type="hidden" name="target_status" value="approved" />
+                  <button type="submit" class="good">Approve for Retry</button>
+                </form>
+              {% elif draft.approval_status in ('approved', 'exported', 'scheduled') %}
+                <form method="post" action="/drafts/{{ draft.id }}/export">
+                  <button type="submit" class="secondary">Export Local Bundle</button>
+                </form>
+                {% if draft.approval_status != 'scheduled' %}
+                <form method="post" action="/drafts/{{ draft.id }}/schedule">
+                  <button type="submit" class="secondary">Schedule Next Window</button>
+                </form>
+                {% endif %}
+                <form method="post" action="/drafts/{{ draft.id }}/stage-browser">
+                  <button type="submit" style="background:#E1306C; color:#fff;">Stage in IG Browser</button>
+                </form>
+                <form method="post" action="/drafts/{{ draft.id }}/publish">
+                  <input type="hidden" name="mode" value="graph_api" />
+                  <button type="submit" class="good">Publish Live (Meta Graph API)</button>
+                </form>
+                <form method="post" action="/drafts/{{ draft.id }}/reject">
+                  <button type="submit" class="bad">Reject</button>
+                </form>
+              {% elif draft.approval_status == 'staged' %}
+                <form method="post" action="/drafts/{{ draft.id }}/confirm-published" style="display:flex; gap:6px; flex-wrap:wrap;">
+                  <input type="text" name="ig_media_id" placeholder="Optional IG media id" style="width:150px; padding:6px 8px; font-size:12px;" />
+                  <input type="text" name="permalink" placeholder="Optional permalink" style="width:180px; padding:6px 8px; font-size:12px;" />
+                  <button type="submit" class="good">Confirm Shared on Instagram</button>
+                </form>
+                <form method="post" action="/drafts/{{ draft.id }}/reopen">
+                  <input type="hidden" name="target_status" value="approved" />
+                  <button type="submit" class="secondary">Reset to Approved</button>
+                </form>
+              {% elif draft.approval_status == 'published' %}
+                <span class="pill published">Published &middot; Immutable ({{ draft.published_at[:19] if draft.published_at else 'done' }})</span>
+              {% endif %}
             </div>
           </div>
         </article>
@@ -441,20 +486,19 @@
         </div>
 
         <div class="side-card">
-          <h3 class="section-title">IG Algorithm Playbook</h3>
-          {% for fmt_name, info in algorithm_playbook.items() %}
-            <div class="list-item">
-              <strong>{{ fmt_name|upper }}</strong>: <span style="color:var(--muted);">{{ info.primary_signal }}</span>
-            </div>
-          {% endfor %}
-        </div>
-
-        <div class="side-card">
           <h3 class="section-title">Posting Schedule</h3>
           {% for s in schedules %}
-            <div class="list-item">
-              <strong>#{{ s.draft_id }} {{ s.draft_title[:42] }}</strong><br />
-              <span style="color:var(--muted);">{{ s.scheduled_for }} &middot; {{ s.status }}</span>
+            <div class="list-item" style="display:flex; justify-content:space-between; gap:8px; align-items:center;">
+              <div>
+                <strong>#{{ s.draft_id }} {{ s.draft_title[:36] }}</strong><br />
+                <span style="color:var(--muted); font-size:12px;">{{ s.scheduled_for }} &middot; {{ s.status }}</span>
+                {% if s.last_error %}<br /><span style="color:var(--bad); font-size:11px;">{{ s.last_error[:90] }}</span>{% endif %}
+              </div>
+              {% if s.status == 'queued' %}
+              <form method="post" action="/schedules/{{ s.id }}/cancel">
+                <button type="submit" class="secondary" style="padding:4px 8px; font-size:11px;">Cancel</button>
+              </form>
+              {% endif %}
             </div>
           {% else %}
             <div style="color:var(--muted); font-size:13px;">No posts scheduled yet.</div>
@@ -462,33 +506,101 @@
         </div>
 
         <div class="side-card">
-          <h3 class="section-title">Publish &amp; Export Logs</h3>
-          {% for p in publish_logs %}
+          <h3 class="section-title">Performance Intelligence (v27.0)</h3>
+          <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+            24h Snapshots: <strong>{{ performance.horizons['24'].count if '24' in performance.horizons else 0 }}</strong> (Avg Score: {{ performance.horizons['24'].avg_engagement_score if ('24' in performance.horizons and performance.horizons['24'].avg_engagement_score is not none) else 'N/A' }}) &middot;
+            72h Snapshots: <strong>{{ performance.horizons['72'].count if '72' in performance.horizons else 0 }}</strong> (Avg Score: {{ performance.horizons['72'].avg_engagement_score if ('72' in performance.horizons and performance.horizons['72'].avg_engagement_score is not none) else 'N/A' }})
+          </div>
+          {% for ins in insights %}
             <div class="list-item">
-              <strong>#{{ p.draft_id }} ({{ p.mode }})</strong><br />
-              <span style="color:var(--muted); word-break:break-all;">{{ p.permalink or p.export_path }}</span>
-              <form method="post" action="/insights/record" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-                <input type="hidden" name="publish_log_id" value="{{ p.id }}" />
-                <input type="number" name="reach" value="1200" min="1" title="Reach" style="width:74px; padding:4px 6px; font-size:12px;" />
-                <input type="number" name="saves" value="65" min="0" title="Saves" style="width:64px; padding:4px 6px; font-size:12px;" />
-                <input type="number" name="shares" value="28" min="0" title="Shares" style="width:64px; padding:4px 6px; font-size:12px;" />
-                <button type="submit" class="secondary" style="padding:4px 8px; font-size:11px;">Log Metrics</button>
-              </form>
+              <strong>{{ ins.title[:40] }}</strong> ({{ ins.horizon_hours }}h)<br />
+              <span style="color:var(--muted);">
+                Score {{ ins.engagement_score if ins.engagement_score is not none else 'N/A' }} &middot;
+                Reach {{ ins.reach if ins.reach is not none else 'null' }} &middot;
+                Saves {{ ins.saves if ins.saves is not none else 'null' }} &middot;
+                Shares {{ ins.shares if ins.shares is not none else 'null' }}
+              </span>
             </div>
           {% else %}
-            <div style="color:var(--muted); font-size:13px;">Nothing published yet.</div>
+            <div style="color:var(--muted); font-size:13px;">Insights appear after posts are synced or logged.</div>
           {% endfor %}
         </div>
 
         <div class="side-card">
-          <h3 class="section-title">Top Insights (Save+Share)</h3>
-          {% for ins in insights %}
+          <h3 class="section-title">Growth Experiments</h3>
+          <form method="post" action="/experiments/create" style="display:grid; gap:6px; margin-bottom:10px;">
+            <input type="text" name="name" placeholder="Experiment name (e.g. Hook Style A/B)" required style="font-size:12px; padding:6px 8px;" />
+            <input type="text" name="hypothesis" placeholder="Hypothesis (e.g. Contrarian hooks raise saves)" required style="font-size:12px; padding:6px 8px;" />
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
+              <input type="text" name="variable_name" placeholder="variable (hook_type)" required style="font-size:11px; padding:6px;" />
+              <input type="text" name="control_value" placeholder="control" required style="font-size:11px; padding:6px;" />
+              <input type="text" name="treatment_value" placeholder="treatment" required style="font-size:11px; padding:6px;" />
+            </div>
+            <button type="submit" class="secondary" style="padding:6px 10px; font-size:12px;">Create Single-Variable Experiment</button>
+          </form>
+
+          {% for exp in experiments[:4] %}
             <div class="list-item">
-              <strong>{{ ins.title[:40] }}</strong><br />
-              <span style="color:var(--muted);">Score {{ ins.engagement_score }} &middot; Saves {{ ins.saves }} &middot; Shares {{ ins.shares }}</span>
+              <strong>#{{ exp.id }} {{ exp.name }}</strong> <span class="pill">{{ exp.status }}</span><br />
+              <span style="color:var(--muted); font-size:12px;">{{ exp.variable_name }}: <code>{{ exp.control_value }}</code> vs <code>{{ exp.treatment_value }}</code></span><br />
+              <span style="color:var(--accent); font-size:11px;">Winner: {{ exp.winner or 'pending' }} (conf: {{ exp.confidence }})</span>
+              <form method="post" action="/experiments/{{ exp.id }}/evaluate" style="margin-top:6px;">
+                <button type="submit" class="secondary" style="padding:4px 8px; font-size:11px;">Evaluate</button>
+              </form>
             </div>
           {% else %}
-            <div style="color:var(--muted); font-size:13px;">Insights appear after posts are logged.</div>
+            <div style="color:var(--muted); font-size:12px;">No experiments running yet.</div>
+          {% endfor %}
+
+          {% if experiment_learnings %}
+          <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border);">
+            <strong style="font-size:12px; color:var(--warn);">Candidate Learnings (Operator Gate)</strong>
+            {% for lrn in experiment_learnings[:4] %}
+              <div style="font-size:11px; margin-top:6px; color:var(--muted);">
+                <strong>{{ lrn.experiment_name }}</strong> [{{ lrn.status }}]: {{ lrn.recommended_rule }}
+                {% if lrn.status == 'pending_approval' %}
+                <div style="display:flex; gap:6px; margin-top:4px;">
+                  <form method="post" action="/experiment-learnings/{{ lrn.id }}/approve">
+                    <button type="submit" class="good" style="padding:3px 8px; font-size:11px;">Approve Promotion</button>
+                  </form>
+                  <form method="post" action="/experiment-learnings/{{ lrn.id }}/reject">
+                    <button type="submit" class="bad" style="padding:3px 8px; font-size:11px;">Reject</button>
+                  </form>
+                </div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+
+        <div class="side-card">
+          <h3 class="section-title">Publish, Stage &amp; Export Logs</h3>
+          {% for p in publish_logs %}
+            <div class="list-item">
+              <strong>#{{ p.draft_id }} ({{ p.mode }} &middot; {{ p.outcome or 'published' }})</strong><br />
+              <span style="color:var(--muted); word-break:break-all;">{{ p.permalink or p.export_path }}</span>
+              {% if (p.outcome or 'published') == 'published' %}
+              <form method="post" action="/insights/record" style="margin-top:6px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+                <input type="hidden" name="publish_log_id" value="{{ p.id }}" />
+                <input type="number" name="reach" placeholder="Reach" min="1" style="width:68px; padding:4px 6px; font-size:12px;" />
+                <input type="number" name="saves" placeholder="Saves" min="0" style="width:62px; padding:4px 6px; font-size:12px;" />
+                <input type="number" name="shares" placeholder="Shares" min="0" style="width:62px; padding:4px 6px; font-size:12px;" />
+                <button type="submit" class="secondary" style="padding:4px 8px; font-size:11px;">Log Metrics</button>
+              </form>
+              {% endif %}
+            </div>
+          {% else %}
+            <div style="color:var(--muted); font-size:13px;">Nothing logged yet.</div>
+          {% endfor %}
+        </div>
+
+        <div class="side-card">
+          <h3 class="section-title">IG Algorithm Playbook</h3>
+          {% for fmt_name, info in algorithm_playbook.items() %}
+            <div class="list-item">
+              <strong>{{ fmt_name|upper }}</strong>: <span style="color:var(--muted);">{{ info.primary_signal }}</span>
+            </div>
           {% endfor %}
         </div>
       </aside>

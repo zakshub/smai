@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 
 from smai.config import Settings
-from smai.db.models import InsightSnapshot
+from smai.db.models import (
+    AccountInsightResult,
+    ApprovalRequiredError,
+    DuplicatePublishError,
+    InsightSnapshot,
+    InvalidStateTransitionError,
+)
 
 
 TRANSIENT_HTTP_STATUSES = {408, 429, 500, 502, 503, 504}
@@ -22,10 +29,6 @@ def redact_secret(text: str, secret: str) -> str:
         return text
     masked = f"{secret[:4]}...{secret[-4:]}" if len(secret) > 10 else "***"
     return text.replace(secret, masked)
-
-
-class DuplicatePublishError(RuntimeError):
-    """Raised when attempting to republish a draft that is already published or in progress."""
 
 
 class MetaAPIError(RuntimeError):
@@ -671,34 +674,250 @@ class InstagramGraphClient:
             return ""
 
     # ------------------------------------------------------------------
-    # Phase C: Insights (to be verified individually in Phase C)
+    # Performance Intelligence: v27.0 Insights (probed metric-by-metric)
     # ------------------------------------------------------------------
 
-    async def fetch_insights(self, ig_media_id: str, horizon_hours: int = 24) -> InsightSnapshot:
+    @staticmethod
+    def _extract_insight_value(item: dict[str, Any], prefer_sum: bool = False) -> int | None:
+        """Extract an integer metric value from Meta v27.0 total_value or values payloads."""
+        total_val = item.get("total_value")
+        if isinstance(total_val, dict):
+            raw = total_val.get("value")
+            if isinstance(raw, (int, float)):
+                return int(raw)
+        values = item.get("values")
+        if isinstance(values, list) and values:
+            nums = [
+                int(entry["value"])
+                for entry in values
+                if isinstance(entry, dict) and isinstance(entry.get("value"), (int, float))
+            ]
+            if nums:
+                return sum(nums) if prefer_sum else nums[-1]
+        return None
+
+    async def fetch_account_insights_safe(
+        self,
+        ig_user_id: str | None = None,
+        window_days: int = 1,
+    ) -> AccountInsightResult:
+        """
+        Collect account-level Meta Graph API v27.0 insights safely by probing metrics
+        individually with explicit metric_type handling.
+        Unsupported metrics are recorded in unsupported_metrics without aborting or fabricating 0.
+        """
         self._ensure_credentials()
-        metrics = "reach,saved,shares,likes,comments,plays"
-        async with self._make_client(20.0) as client:
-            payload = await self._request_with_retry(
-                client,
-                "GET",
-                f"{ig_media_id}/insights",
-                params={"metric": metrics},
-            )
-        data: list[dict[str, Any]] = payload.get("data", [])
+        target_id = ig_user_id or self.settings.ig_user_id
+        now = datetime.now(timezone.utc)
+        since_ts = int((now - timedelta(days=max(1, window_days))).timestamp())
+        until_ts = int(now.timestamp())
+
+        metric_specs: list[tuple[str, str, tuple[str, ...]]] = [
+            ("reach", "day", ("total_value", "time_series")),
+            ("views", "day", ("total_value",)),
+            ("profile_views", "day", ("total_value",)),
+            ("accounts_engaged", "day", ("total_value",)),
+            ("total_interactions", "day", ("total_value",)),
+            ("follower_count", "day", ("time_series",)),
+        ]
 
         parsed: dict[str, int] = {}
-        for item in data:
-            name = item.get("name", "")
-            values = item.get("values", [])
-            if values:
-                parsed[name] = int(values[0].get("value", 0))
+        raw_metrics: dict[str, int | float | str | None] = {}
+        unsupported: list[str] = []
+        metric_errors: dict[str, str] = {}
+
+        async with self._make_client(20.0) as client:
+            for metric_name, period, metric_types in metric_specs:
+                collected = False
+                last_err: MetaAPIError | None = None
+                for mtype in metric_types:
+                    try:
+                        payload = await self._request_with_retry(
+                            client,
+                            "GET",
+                            f"{target_id}/insights",
+                            params={
+                                "metric": metric_name,
+                                "period": period,
+                                "metric_type": mtype,
+                                "since": since_ts,
+                                "until": until_ts,
+                            },
+                        )
+                        items: list[dict[str, Any]] = payload.get("data", [])
+                        if items:
+                            val = self._extract_insight_value(
+                                items[0],
+                                prefer_sum=(mtype == "time_series"),
+                            )
+                            if val is not None:
+                                parsed[metric_name] = val
+                                raw_metrics[f"{metric_name}:{mtype}"] = val
+                        collected = True
+                        break
+                    except MetaAPIError as exc:
+                        last_err = exc
+                        # Auth/permission errors must surface immediately instead of being masked.
+                        if exc.code in {10, 190, 200} or exc.status_code in {401, 403}:
+                            raise
+                        # Retry alternative metric_type only when Meta rejects metric_type syntax.
+                        msg_l = exc.message.lower()
+                        if "metric_type" in msg_l or "time_series" in msg_l or "total_value" in msg_l:
+                            continue
+                        break
+                if not collected and last_err is not None:
+                    unsupported.append(metric_name)
+                    metric_errors[metric_name] = redact_secret(
+                        f"code={last_err.code} status={last_err.status_code}: {last_err.message}",
+                        self.settings.ig_access_token,
+                    )
+
+        return AccountInsightResult(
+            ig_user_id=target_id,
+            window_days=max(1, window_days),
+            captured_at=now.isoformat(),
+            source="meta_graph_api_v27",
+            reach=parsed.get("reach"),
+            views=parsed.get("views"),
+            profile_views=parsed.get("profile_views"),
+            accounts_engaged=parsed.get("accounts_engaged"),
+            total_interactions=parsed.get("total_interactions"),
+            follower_delta=parsed.get("follower_count"),
+            raw_metrics=raw_metrics,
+            unsupported_metrics=unsupported,
+            metric_errors=metric_errors,
+        )
+
+    async def fetch_media_insights_safe(
+        self,
+        ig_media_id: str,
+        media_product_type: str = "FEED",
+        horizon_hours: int = 24,
+    ) -> InsightSnapshot:
+        """
+        Collect media-level Meta Graph API v27.0 insights metric-by-metric so deprecated
+        or surface-specific metrics fail gracefully into unsupported_metrics without fabricating 0s.
+        """
+        self._ensure_credentials()
+        product_type = (media_product_type or "FEED").strip().upper()
+        base_like_count: int | None = None
+        base_comments_count: int | None = None
+        raw_metrics: dict[str, int | float | str | None] = {}
+        unsupported: list[str] = []
+        parsed: dict[str, int] = {}
+
+        async with self._make_client(20.0) as client:
+            # Fetch base media fields first for reliable product_type & direct like/comment counts.
+            try:
+                media_obj = await self._request_with_retry(
+                    client,
+                    "GET",
+                    ig_media_id,
+                    params={"fields": "id,media_type,media_product_type,like_count,comments_count"},
+                )
+                if media_obj.get("media_product_type"):
+                    product_type = str(media_obj["media_product_type"]).upper()
+                if isinstance(media_obj.get("like_count"), (int, float)):
+                    base_like_count = int(media_obj["like_count"])
+                    raw_metrics["media_like_count"] = base_like_count
+                if isinstance(media_obj.get("comments_count"), (int, float)):
+                    base_comments_count = int(media_obj["comments_count"])
+                    raw_metrics["media_comments_count"] = base_comments_count
+            except MetaAPIError as exc:
+                if exc.code in {10, 190, 200} or exc.status_code in {401, 403}:
+                    raise
+
+            if "REEL" in product_type:
+                metrics = [
+                    "reach",
+                    "views",
+                    "plays",
+                    "saved",
+                    "shares",
+                    "likes",
+                    "comments",
+                    "total_interactions",
+                    "ig_reels_avg_watch_time",
+                ]
+            elif "STORY" in product_type:
+                metrics = ["reach", "views", "shares", "replies", "profile_visits", "follows"]
+            else:
+                metrics = [
+                    "reach",
+                    "views",
+                    "saved",
+                    "shares",
+                    "likes",
+                    "comments",
+                    "profile_visits",
+                    "follows",
+                    "total_interactions",
+                ]
+
+            for metric_name in metrics:
+                try:
+                    payload = await self._request_with_retry(
+                        client,
+                        "GET",
+                        f"{ig_media_id}/insights",
+                        params={"metric": metric_name},
+                    )
+                except MetaAPIError as exc:
+                    if exc.code in {10, 190, 200} or exc.status_code in {401, 403}:
+                        raise
+                    if "metric_type" in exc.message.lower():
+                        try:
+                            payload = await self._request_with_retry(
+                                client,
+                                "GET",
+                                f"{ig_media_id}/insights",
+                                params={"metric": metric_name, "metric_type": "total_value"},
+                            )
+                        except MetaAPIError as inner_exc:
+                            unsupported.append(metric_name)
+                            raw_metrics[f"error:{metric_name}"] = redact_secret(
+                                inner_exc.message, self.settings.ig_access_token
+                            )
+                            continue
+                    else:
+                        unsupported.append(metric_name)
+                        raw_metrics[f"error:{metric_name}"] = redact_secret(
+                            exc.message, self.settings.ig_access_token
+                        )
+                        continue
+
+                items: list[dict[str, Any]] = payload.get("data", [])
+                if items:
+                    val = self._extract_insight_value(items[0])
+                    if val is not None:
+                        parsed[metric_name] = val
+                        raw_metrics[metric_name] = val
 
         return InsightSnapshot(
             horizon_hours=horizon_hours,
-            reach=parsed.get("reach", 0),
-            plays=parsed.get("plays", 0),
-            likes=parsed.get("likes", 0),
-            comments=parsed.get("comments", 0),
-            saves=parsed.get("saved", 0),
-            shares=parsed.get("shares", 0),
+            reach=parsed.get("reach"),
+            views=parsed.get("views"),
+            plays=parsed.get("plays"),
+            likes=parsed.get("likes") if "likes" in parsed else base_like_count,
+            comments=parsed.get("comments") if "comments" in parsed else base_comments_count,
+            saves=parsed.get("saved"),
+            shares=parsed.get("shares"),
+            profile_visits=parsed.get("profile_visits"),
+            follows=parsed.get("follows"),
+            avg_watch_time_ms=parsed.get("ig_reels_avg_watch_time"),
+            source="meta_graph_api_v27",
+            raw_metrics=raw_metrics,
+            unsupported_metrics=unsupported,
+        )
+
+    async def fetch_insights(
+        self,
+        ig_media_id: str,
+        horizon_hours: int = 24,
+        media_product_type: str = "FEED",
+    ) -> InsightSnapshot:
+        return await self.fetch_media_insights_safe(
+            ig_media_id=ig_media_id,
+            media_product_type=media_product_type,
+            horizon_hours=horizon_hours,
         )

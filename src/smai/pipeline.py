@@ -9,14 +9,25 @@ from typing import Any
 from smai.agents import AnalystAgent, CriticAgent, LLMClient, ScoutAgent, WriterAgent
 from smai.config import BrandBrain, Settings, load_brand
 from smai.db.database import Database
-from smai.db.models import ContentFormat, ContentPackage, QAReport, TopicCandidate
+from smai.db.models import (
+    ApprovalRequiredError,
+    ContentFormat,
+    ContentPackage,
+    CycleMode,
+    DuplicatePublishError,
+    InvalidStateTransitionError,
+    QAReport,
+    TopicCandidate,
+    normalize_approval_status,
+)
 from smai.media import CarouselBuilder, ReelBuilder
 from smai.publishing import (
-    DuplicatePublishError,
     InstagramBrowserAutomator,
     InstagramGraphClient,
     MediaStagingService,
+    MetaAPIError,
     export_draft_bundle,
+    redact_secret,
 )
 
 
@@ -63,18 +74,15 @@ class SmaiPipeline:
         formats: list[ContentFormat] | None = None,
         render_media: bool = True,
         dry_run_reel: bool = False,
-        auto_schedule_and_export: bool = False,
+        cycle_mode: CycleMode = "draft_only",
+        approve_qa_passed: bool = False,
     ) -> list[dict[str, Any]]:
         """
-        Execute the full 5-step autonomous draft cycle:
-        1) Research IG topics & algorithm signals
-        2) Suggest content
-        3) Match target audience & regular posting time
-        4) Create all requested content types (text, pic, video, carousel, story)
-        5) Save into Drafts (and optionally auto-schedule + export bundles in full autopilot mode)
+        Execute the research-to-draft cycle without mixing scheduling and export/publishing:
+        - draft_only: Generate, render, and QA into 'pending_approval'.
+        - export_review: Requires approval; exports approved/QA-passed bundles without scheduling.
+        - auto_schedule: Requires approval; schedules into a posting window without exporting/publishing immediately.
         """
-        from smai.scheduler.worker import pick_next_window_slot
-
         brand, brand_id = self.ensure_brand(brand_slug)
         target_formats: list[ContentFormat] = formats or [
             f for f in brand.regular_cadence.daily_mix
@@ -93,12 +101,21 @@ class SmaiPipeline:
                 render_media=render_media,
                 dry_run_reel=dry_run_reel,
             )
-            if auto_schedule_and_export and res["qa"]["status"] == "pass":
-                draft_id = int(res["draft"]["id"])
-                slot = pick_next_window_slot(brand.schedule_windows, timezone=brand.timezone)
-                self.db.create_schedule(draft_id, slot.isoformat())
-                await self.publish_draft(draft_id, mode="export")
-                res["draft"] = self.db.get_draft(draft_id)
+            draft_id = int(res["draft"]["id"])
+            if cycle_mode in ("export_review", "auto_schedule") and res["qa"]["status"] == "pass":
+                if approve_qa_passed:
+                    self.approve_draft(draft_id)
+                    if cycle_mode == "export_review":
+                        exp = await self.export_draft(draft_id)
+                        res["export"] = exp
+                    elif cycle_mode == "auto_schedule":
+                        sched = self.schedule_draft(draft_id)
+                        res["schedule"] = sched
+                    res["draft"] = self.db.get_draft(draft_id)
+                else:
+                    res["cycle_note"] = (
+                        f"Draft stays in 'pending_approval': '{cycle_mode}' never runs without approval."
+                    )
             results.append(res)
         return results
 
@@ -280,12 +297,151 @@ class SmaiPipeline:
         self.db.replace_media_assets(draft_id, assets)
         return assets
 
-    async def publish_draft(self, draft_id: int, mode: str | None = None) -> dict[str, Any]:
+    def approve_draft(self, draft_id: int) -> dict[str, Any]:
+        return self.db.transition_draft_status(draft_id, "approved")
+
+    def reject_draft(self, draft_id: int) -> dict[str, Any]:
+        return self.db.transition_draft_status(draft_id, "rejected")
+
+    def reopen_draft(self, draft_id: int, target_status: str = "pending_approval") -> dict[str, Any]:
+        return self.db.transition_draft_status(draft_id, target_status)
+
+    def schedule_draft(self, draft_id: int, scheduled_for: str | None = None) -> dict[str, Any]:
+        from smai.scheduler.worker import pick_next_window_slot
+
+        draft = self.db.get_draft(draft_id)
+        if not draft:
+            raise ValueError(f"Draft {draft_id} not found.")
+        brand, _ = self.ensure_brand()
+        slot_iso = (
+            scheduled_for
+            or pick_next_window_slot(brand.schedule_windows, timezone=brand.timezone).isoformat()
+        )
+        schedule_id = self.db.schedule_draft_atomic(draft_id, slot_iso)
+        return {
+            "schedule_id": schedule_id,
+            "draft_id": draft_id,
+            "scheduled_for": slot_iso,
+            "draft": self.db.get_draft(draft_id),
+        }
+
+    def cancel_schedule(self, schedule_id: int) -> dict[str, Any]:
+        return self.db.cancel_schedule_atomic(schedule_id)
+
+    async def export_draft(self, draft_id: int) -> dict[str, Any]:
+        """Export an approved (or exported/scheduled) draft into a local bundle without marking published."""
+        draft = self.db.get_draft(draft_id)
+        if not draft:
+            raise ValueError(f"Draft {draft_id} not found.")
+        cur_status = normalize_approval_status(str(draft["approval_status"]))
+        if cur_status == "published":
+            raise DuplicatePublishError(f"Draft {draft_id} is already published.")
+        if cur_status in ("draft", "pending_approval", "rejected", "failed"):
+            raise ApprovalRequiredError(
+                f"Draft {draft_id} has status '{cur_status}' and must be approved before exporting."
+            )
+        if cur_status not in ("approved", "exported", "scheduled"):
+            raise InvalidStateTransitionError(
+                f"Cannot export draft {draft_id} from status '{cur_status}'."
+            )
+
+        assets = self.db.list_media_assets(draft_id)
+        if not assets:
+            await self.render_draft(draft_id)
+            assets = self.db.list_media_assets(draft_id)
+
+        bundle_dir = export_draft_bundle(draft, assets, self.settings.resolve_export_dir())
+        log_id = self.db.record_export(draft_id=draft_id, export_path=str(bundle_dir))
+        return {
+            "publish_log_id": log_id,
+            "mode": "export",
+            "outcome": "exported",
+            "export_path": str(bundle_dir),
+            "draft": self.db.get_draft(draft_id),
+        }
+
+    async def stage_in_browser(self, draft_id: int) -> dict[str, Any]:
+        """Upload media & caption into IG Web Composer without clicking Share (records 'staged', not 'published')."""
+        draft = self.db.get_draft(draft_id)
+        if not draft:
+            raise ValueError(f"Draft {draft_id} not found.")
+        cur_status = normalize_approval_status(str(draft["approval_status"]))
+        if cur_status == "published":
+            raise DuplicatePublishError(f"Draft {draft_id} is already published.")
+        if cur_status in ("draft", "pending_approval", "rejected", "failed"):
+            raise ApprovalRequiredError(
+                f"Draft {draft_id} has status '{cur_status}' and must be approved before staging."
+            )
+        if cur_status not in ("approved", "exported", "scheduled"):
+            raise InvalidStateTransitionError(
+                f"Cannot stage draft {draft_id} from status '{cur_status}'."
+            )
+
+        assets = self.db.list_media_assets(draft_id)
+        if not assets:
+            await self.render_draft(draft_id)
+            assets = self.db.list_media_assets(draft_id)
+        image_assets = [a for a in assets if a["asset_type"] == "slide_png"]
+        if draft["format"] in ("reel", "slide_video"):
+            upload_paths = [Path(a["local_path"]) for a in assets if a["local_path"].endswith(".mp4")]
+        else:
+            upload_paths = [Path(a["local_path"]) for a in image_assets]
+
+        automator = InstagramBrowserAutomator(self.settings)
+        res_browser = await automator.upload_draft_to_instagram(
+            media_paths=upload_paths,
+            caption=draft["caption"],
+            auto_share=False,
+        )
+        log_id = self.db.record_staged(
+            draft_id=draft_id,
+            mode="ig_browser_stage",
+            notes=",".join(res_browser.get("files_uploaded", [])),
+        )
+        return {
+            "publish_log_id": log_id,
+            **res_browser,
+            "draft": self.db.get_draft(draft_id),
+        }
+
+    def confirm_staged_publish(
+        self, draft_id: int, ig_media_id: str = "", permalink: str = ""
+    ) -> dict[str, Any]:
+        log_id = self.db.confirm_staged_publish(
+            draft_id=draft_id, ig_media_id=ig_media_id, permalink=permalink
+        )
+        return {
+            "publish_log_id": log_id,
+            "mode": "ig_browser_confirmed",
+            "outcome": "published",
+            "draft": self.db.get_draft(draft_id),
+        }
+
+    async def publish_draft(
+        self,
+        draft_id: int,
+        mode: str | None = None,
+        verify_public_media: bool = True,
+    ) -> dict[str, Any]:
+        """Publish an approved draft via live Meta Graph API or confirmed browser auto-share."""
         draft = self.db.get_draft(draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found.")
 
         target_mode = (mode or self.settings.smai_publish_mode).lower().strip()
+        if target_mode == "export":
+            raise ValueError(
+                "Export mode does not publish to Instagram. Call export_draft(draft_id) "
+                "or specify mode='graph_api' / mode='browser_share' to publish."
+            )
+        if target_mode == "browser":
+            raise ValueError(
+                "Browser staging mode awaits manual Share. Call stage_in_browser(draft_id) "
+                "followed by confirm_staged_publish(draft_id)."
+            )
+        if target_mode not in ("graph_api", "browser_share"):
+            raise ValueError(f"Unsupported publish mode '{target_mode}'.")
+
         prev_status = self.db.claim_publish_lock(draft_id, target_mode)
         if prev_status is None:
             raise DuplicatePublishError(
@@ -295,12 +451,12 @@ class SmaiPipeline:
         try:
             assets = self.db.list_media_assets(draft_id)
             if not assets:
-                assets = await self.render_draft(draft_id)
+                await self.render_draft(draft_id)
                 assets = self.db.list_media_assets(draft_id)
 
             image_assets = [a for a in assets if a["asset_type"] == "slide_png"]
 
-            if target_mode in ("browser", "browser_share"):
+            if target_mode == "browser_share":
                 automator = InstagramBrowserAutomator(self.settings)
                 if draft["format"] in ("reel", "slide_video"):
                     upload_paths = [
@@ -311,58 +467,78 @@ class SmaiPipeline:
                 res_browser = await automator.upload_draft_to_instagram(
                     media_paths=upload_paths,
                     caption=draft["caption"],
-                    auto_share=(target_mode == "browser_share"),
+                    auto_share=True,
                 )
-                log_id = self.db.record_publish(
-                    draft_id=draft_id,
-                    mode=target_mode,
-                    permalink="https://www.instagram.com/",
-                    export_path=",".join(res_browser["files_uploaded"]),
-                )
+                if res_browser.get("status") == "confirmed_shared":
+                    log_id = self.db.record_publish(
+                        draft_id=draft_id,
+                        mode="browser_share",
+                        permalink="https://www.instagram.com/",
+                        export_path=",".join(res_browser.get("files_uploaded", [])),
+                        outcome="published",
+                    )
+                else:
+                    log_id = self.db.record_staged(
+                        draft_id=draft_id,
+                        mode="browser_share_staged",
+                        notes=",".join(res_browser.get("files_uploaded", [])),
+                    )
                 return {"publish_log_id": log_id, **res_browser}
 
-            if target_mode == "graph_api":
-                staging = MediaStagingService(self.settings)
-                client = self._graph_client or InstagramGraphClient(self.settings)
-                target_assets = (
-                    image_assets
-                    if draft["format"] in ("carousel", "single_pic", "text_post", "story")
-                    else assets
-                )
-                if not target_assets:
-                    raise ValueError(f"No publishable media assets found for draft {draft_id}.")
+            # target_mode == "graph_api"
+            staging = MediaStagingService(self.settings)
+            client = self._graph_client or InstagramGraphClient(self.settings)
+            target_assets = (
+                image_assets
+                if draft["format"] in ("carousel", "single_pic", "text_post", "story")
+                else assets
+            )
+            if not target_assets:
+                raise ValueError(f"No publishable media assets found for draft {draft_id}.")
 
-                urls: list[str] = []
-                for asset in target_assets:
-                    url = staging.resolve_public_url(Path(asset["local_path"]))
-                    self.db.update_asset_public_url(int(asset["id"]), url)
-                    urls.append(url)
+            urls: list[str] = []
+            for asset in target_assets:
+                url = staging.resolve_public_url(Path(asset["local_path"]))
+                if verify_public_media:
+                    expected_prefix = (
+                        "video/" if draft["format"] in ("reel", "slide_video") else "image/"
+                    )
+                    reachability = await staging.verify_public_url_reachable(
+                        url, expected_prefix=expected_prefix
+                    )
+                    if not reachability["ok"]:
+                        raise RuntimeError(
+                            f"Staged public media URL verification failed for '{url}': "
+                            f"{reachability['reason']}"
+                        )
+                self.db.update_asset_public_url(int(asset["id"]), url)
+                urls.append(url)
 
-                if draft["format"] in ("reel", "slide_video"):
-                    res = await client.publish_reel(urls[0], draft["caption"])
-                elif draft["format"] == "story":
-                    res = await client.publish_story(urls[0])
-                elif len(urls) == 1:
-                    res = await client.publish_image(urls[0], draft["caption"])
-                else:
-                    res = await client.publish_carousel(urls, draft["caption"])
+            if draft["format"] in ("reel", "slide_video"):
+                res = await client.publish_reel(urls[0], draft["caption"])
+            elif draft["format"] == "story":
+                res = await client.publish_story(urls[0])
+            elif len(urls) == 1:
+                res = await client.publish_image(urls[0], draft["caption"])
+            else:
+                res = await client.publish_carousel(urls, draft["caption"])
 
-                log_id = self.db.record_publish(
-                    draft_id=draft_id,
-                    mode="graph_api",
-                    ig_container_id=res.get("ig_container_id", ""),
-                    ig_media_id=res.get("ig_media_id", ""),
-                    permalink=res.get("permalink", ""),
-                )
-                return {"publish_log_id": log_id, "mode": "graph_api", **res}
-
-            bundle_dir = export_draft_bundle(draft, assets, self.settings.resolve_export_dir())
             log_id = self.db.record_publish(
                 draft_id=draft_id,
-                mode="export",
-                export_path=str(bundle_dir),
+                mode="graph_api",
+                ig_container_id=res.get("ig_container_id", ""),
+                ig_media_id=res.get("ig_media_id", ""),
+                permalink=res.get("permalink", ""),
+                outcome="published",
             )
-            return {"publish_log_id": log_id, "mode": "export", "export_path": str(bundle_dir)}
-        except Exception:
-            self.db.release_publish_lock(draft_id, prev_status)
+            return {"publish_log_id": log_id, "mode": "graph_api", **res}
+        except Exception as exc:
+            diag = redact_secret(str(exc), self.settings.ig_access_token)
+            non_recoverable = isinstance(exc, MetaAPIError) and not exc.is_transient
+            self.db.release_publish_lock(
+                draft_id,
+                prev_status,
+                mark_failed=non_recoverable,
+                error_message=diag,
+            )
             raise

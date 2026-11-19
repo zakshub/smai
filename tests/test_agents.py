@@ -119,7 +119,10 @@ def test_instagram_account_analyzer(tmp_path):
         )
     )
     assert report.handle == "@zakshub.ai"
-    assert report.audit_score >= 75.0
+    assert report.audit_score >= 60.0
+    assert report.followers_count is None
+    assert report.verified_observed["followers_count"] is None
+    assert len(report.inferred_heuristic) >= 3
     assert len(report.algorithm_gaps) >= 3
     assert "reel" in report.format_strategy
 

@@ -15,6 +15,7 @@ from smai.config import Settings
 from smai.db.database import get_database
 from smai.pipeline import SmaiPipeline
 from smai.publishing.instagram_api import (
+    ApprovalRequiredError,
     DuplicatePublishError,
     InstagramGraphClient,
     MetaAPIError,
@@ -478,17 +479,30 @@ def test_phase_b_pipeline_duplicate_publishing_prevention_and_failure_recovery(t
     )
     draft_id = int(draft_res["draft"]["id"])
 
-    # 1. Pre-publish fatal failure must release the publish lock back to 'pending'
+    # 0. Unapproved draft must be blocked before any API calls are attempted
     try:
-        asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api"))
+        asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api", verify_public_media=False))
+        assert False, "Expected ApprovalRequiredError on unapproved draft"
+    except ApprovalRequiredError:
+        pass
+
+    pipeline.approve_draft(draft_id)
+
+    # 1. Pre-publish non-recoverable failure moves draft to 'failed' with redacted error
+    try:
+        asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api", verify_public_media=False))
         assert False, "Expected MetaAPIError on first failed publish"
     except MetaAPIError as exc:
         assert FAKE_TOKEN not in str(exc)
-    assert db.get_draft(draft_id)["approval_status"] == "pending"
+    failed_draft = db.get_draft(draft_id)
+    assert failed_draft["approval_status"] == "failed"
+    assert failed_draft["last_publish_error"]
+    assert FAKE_TOKEN not in failed_draft["last_publish_error"]
 
-    # 2. Retry after fixing upstream succeeds and records publish
+    # 2. Operator reopens to 'approved', fixes upstream, and retry succeeds
+    pipeline.reopen_draft(draft_id, target_status="approved")
     fail_first = False
-    ok_res = asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api"))
+    ok_res = asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api", verify_public_media=False))
     assert ok_res["ig_media_id"] == "MEDIA_PIPE_1"
     assert ok_res["permalink"] == "https://www.instagram.com/p/PIPE1/"
     assert db.get_draft(draft_id)["approval_status"] == "published"
@@ -496,7 +510,7 @@ def test_phase_b_pipeline_duplicate_publishing_prevention_and_failure_recovery(t
 
     # 3. Attempting to republish an already-published draft must be blocked
     try:
-        asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api"))
+        asyncio.run(pipeline.publish_draft(draft_id, mode="graph_api", verify_public_media=False))
         assert False, "Expected DuplicatePublishError on second publish"
     except DuplicatePublishError:
         pass
@@ -516,8 +530,25 @@ def test_phase_b_web_publish_returns_409_on_duplicate(tmp_path: Path):
         )
         draft_id = client.get("/api/drafts").json()[0]["id"]
 
-        first = client.post(f"/drafts/{draft_id}/publish", follow_redirects=False)
-        assert first.status_code == 303
+        unapproved = client.post(
+            f"/drafts/{draft_id}/publish",
+            data={"mode": "graph_api"},
+            follow_redirects=False,
+        )
+        assert unapproved.status_code == 403
 
-        second = client.post(f"/drafts/{draft_id}/publish", follow_redirects=False)
+        assert client.post(f"/drafts/{draft_id}/approve", follow_redirects=False).status_code == 303
+        assert client.post(f"/drafts/{draft_id}/export", follow_redirects=False).status_code == 303
+        assert client.get("/api/drafts").json()[0]["approval_status"] == "exported"
+
+        db = get_database(settings)
+        db.record_staged(draft_id)
+        confirm = client.post(f"/drafts/{draft_id}/confirm-published", follow_redirects=False)
+        assert confirm.status_code == 303
+
+        second = client.post(
+            f"/drafts/{draft_id}/publish",
+            data={"mode": "graph_api"},
+            follow_redirects=False,
+        )
         assert second.status_code == 409

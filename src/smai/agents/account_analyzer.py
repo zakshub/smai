@@ -27,12 +27,13 @@ class AnalyzedPostItem(BaseModel):
     media_type: str = "REEL"  # REEL | IMAGE | CAROUSEL
     caption_excerpt: str = ""
     hashtags: list[str] = Field(default_factory=list)
-    likes: int = 0
-    comments: int = 0
-    plays: int = 0
+    likes: int | None = None
+    comments: int | None = None
+    plays: int | None = None
     posted_at: str = ""
     posted_hour_pkt: int = -1
-    engagement_points: float = 0.0
+    engagement_points: float | None = None
+    source: str = ""
 
 
 class AccountAuditReport(BaseModel):
@@ -40,15 +41,16 @@ class AccountAuditReport(BaseModel):
     display_name: str = ""
     category: str = ""
     biography: str = ""
-    followers_count: int = 0
-    following_count: int = 0
-    media_count: int = 0
+    followers_count: int | None = None
+    following_count: int | None = None
+    media_count: int | None = None
     detected_niche: str
     detected_languages: list[str] = Field(default_factory=list)
     top_existing_hashtags: list[str] = Field(default_factory=list)
     existing_format_breakdown: dict[str, int] = Field(default_factory=dict)
     audit_score: float = Field(ge=0.0, le=100.0, default=78.0)
     data_source: str = "instagram_live_graphql"
+    captured_at: str = ""
     bio_diagnosis: str
     existing_content_summary: str = ""
     best_posting_windows_from_history: list[str] = Field(default_factory=list)
@@ -60,10 +62,13 @@ class AccountAuditReport(BaseModel):
     recommended_keywords: list[str] = Field(default_factory=list)
     top_post_ideas: list[str] = Field(default_factory=list)
     recent_posts_analyzed: int = 0
-    avg_likes: float = 0.0
-    avg_comments: float = 0.0
-    avg_plays: float = 0.0
+    avg_likes: float | None = None
+    avg_comments: float | None = None
+    avg_plays: float | None = None
     report_markdown_path: str = ""
+    verified_observed: dict[str, Any] = Field(default_factory=dict)
+    inferred_heuristic: list[dict[str, Any]] = Field(default_factory=list)
+    ai_recommended: dict[str, Any] = Field(default_factory=dict)
 
 
 def normalize_handle(raw: str) -> str:
@@ -145,13 +150,24 @@ class InstagramAccountAnalyzer:
             or username.replace(".", " ").replace("_", " ").title()
         )
         category = str(profile_data.get("category") or "").strip()
-        followers = int(profile_data.get("followers_count") or 0)
-        following = int(
-            profile_data.get("following_count")
-            or profile_data.get("follows_count")
-            or 0
+        website = str(profile_data.get("website") or "").strip()
+        resolved_ig_id = str(profile_data.get("id") or user_id or "").strip()
+        followers = (
+            int(profile_data["followers_count"])
+            if profile_data.get("followers_count") is not None
+            else None
         )
-        media_count = int(profile_data.get("media_count") or len(raw_posts))
+        raw_following = profile_data.get("following_count")
+        if raw_following is None:
+            raw_following = profile_data.get("follows_count")
+        following = int(raw_following) if raw_following is not None else None
+        raw_media_cnt = profile_data.get("media_count")
+        media_count = (
+            int(raw_media_cnt)
+            if raw_media_cnt is not None
+            else (len(raw_posts) if raw_posts else None)
+        )
+        captured_at = datetime.now(self.tz).isoformat()
 
         report = self._build_audit_report(
             handle=handle,
@@ -165,69 +181,106 @@ class InstagramAccountAnalyzer:
             media_count=media_count,
             raw_posts=raw_posts,
             data_source=data_source,
+            captured_at=captured_at,
+            ig_user_id=resolved_ig_id,
+            website=website,
         )
+
+        snapshot_id = self.db.insert_account_snapshot(
+            brand_slug=self.settings.smai_default_brand,
+            ig_user_id=resolved_ig_id,
+            handle=handle,
+            display_name=display_name,
+            biography=biography,
+            followers_count=followers,
+            follows_count=following,
+            media_count=media_count,
+            website=website,
+            source=data_source,
+            raw_json=json.dumps(profile_data),
+            captured_at=captured_at,
+        )
+        if raw_posts:
+            cache_items = [
+                {
+                    "ig_media_id": str(rp.get("id") or rp.get("code") or ""),
+                    "media_type": str(rp.get("media_type") or ""),
+                    "media_product_type": str(rp.get("media_product_type") or ""),
+                    "caption": str(rp.get("caption") or ""),
+                    "permalink": str(rp.get("permalink") or ""),
+                    "like_count": rp.get("like_count"),
+                    "comments_count": rp.get("comments_count"),
+                    "media_timestamp": str(rp.get("timestamp") or rp.get("taken_at") or ""),
+                    "raw": rp,
+                }
+                for rp in raw_posts
+            ]
+            self.db.upsert_account_media_cache(
+                snapshot_id=snapshot_id,
+                handle=handle,
+                items=cache_items,
+                source=data_source,
+                captured_at=captured_at,
+            )
 
         md_path = self.write_markdown_report(report)
         report.report_markdown_path = str(md_path)
         return report
 
     def write_markdown_report(self, report: AccountAuditReport) -> Path:
-        """Write a comprehensive human-readable Markdown audit report to data/reports/."""
+        """Write a comprehensive human-readable Markdown audit report separating Observed vs Inferred vs AI."""
         reports_dir = self.settings.resolve_data_dir() / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
         clean_slug = report.handle.lstrip("@").replace(".", "_")
         out_path = reports_dir / f"audit_{clean_slug}.md"
 
+        def _fmt_num(val: int | float | None) -> str:
+            if val is None:
+                return "Not observed (null)"
+            if isinstance(val, float):
+                return f"{val}"
+            return f"{val:,}"
+
         lines = [
-            f"# Instagram Account Audit & Content Strategy Report: {report.handle}",
+            f"# Instagram Account Intelligence Report: {report.handle}",
+            "",
+            "---",
+            "",
+            "## 1. Verified Observed Account & Media Data",
+            "",
+            f"> Provenance: `{report.data_source}` | Captured At: `{report.captured_at or 'N/A'}`",
             "",
             f"- **Display Name:** {report.display_name}",
-            f"- **Category:** {report.category or 'Creator / Personal Blog'}",
-            f"- **Followers:** {report.followers_count:,} | **Following:** {report.following_count:,} | **Total Posts:** {report.media_count:,}",
-            f"- **Recent Posts Analyzed:** {report.recent_posts_analyzed} (Data Source: `{report.data_source}`)",
-            f"- **Audit Score:** **{report.audit_score} / 100**",
-            f"- **Auto-Detected Content Niche:** **{report.detected_niche}**",
-            f"- **Detected Languages in Posts:** {', '.join(report.detected_languages) or 'English'}",
-            f"- **Top Existing Hashtags Used:** {', '.join(report.top_existing_hashtags) or 'None detected'}",
-            "",
-            "---",
-            "",
-            "## 1. Profile & Bio Diagnosis",
-            "",
-            f"> **Current Bio:** {report.biography or '(Empty)'}",
-            "",
-            report.bio_diagnosis,
-            "",
-            "---",
-            "",
-            "## 2. Analysis of Existing Content on Profile",
+            f"- **Category:** {report.category or 'Not observed'}",
+            f"- **Biography:** {report.biography or '(Not observed / empty)'}",
+            f"- **Followers:** {_fmt_num(report.followers_count)} | **Following:** {_fmt_num(report.following_count)} | **Total Posts:** {_fmt_num(report.media_count)}",
+            f"- **Recent Posts Observed:** {report.recent_posts_analyzed}",
+            f"- **Observed Format Breakdown:** `{json.dumps(report.existing_format_breakdown)}`",
+            f"- **Observed Average Likes:** `{_fmt_num(report.avg_likes)}` | **Observed Average Comments:** `{_fmt_num(report.avg_comments)}` | **Observed Average Reel Plays:** `{_fmt_num(report.avg_plays)}`",
             "",
             report.existing_content_summary,
-            "",
-            f"- **Format Mix in Analyzed Posts:** `{json.dumps(report.existing_format_breakdown)}`",
-            f"- **Average Likes:** `{report.avg_likes}` | **Average Comments:** `{report.avg_comments}` | **Average Reel Plays:** `{report.avg_plays}`",
             "",
         ]
 
         if report.top_performing_posts:
-            lines.append("### Top Performing Recent Posts")
+            lines.append("### Top Observed Recent Posts")
             lines.append("")
             lines.append("| Format | Likes | Comments | Plays | Posted (PKT) | Caption Excerpt | Link |")
             lines.append("| :--- | :---: | :---: | :---: | :---: | :--- | :--- |")
             for p in report.top_performing_posts[:6]:
                 cap = p.caption_excerpt.replace("\n", " ").replace("|", "/")[:70]
                 lines.append(
-                    f"| `{p.media_type}` | {p.likes} | {p.comments} | {p.plays} | {p.posted_at or 'N/A'} | {cap} | {p.permalink} |"
+                    f"| `{p.media_type}` | {_fmt_num(p.likes)} | {_fmt_num(p.comments)} | {_fmt_num(p.plays)} | {p.posted_at or 'Not observed'} | {cap} | {p.permalink} |"
                 )
             lines.append("")
 
         if report.recent_posts:
-            lines.append("### All Analyzed Recent Posts")
+            lines.append("### All Observed Recent Posts")
             lines.append("")
             for idx, p in enumerate(report.recent_posts, start=1):
                 cap = p.caption_excerpt.replace("\n", " ")[:140]
                 lines.append(
-                    f"{idx}. **`[{p.media_type}]`** ({p.likes} likes, {p.comments} comments, {p.plays} plays, posted `{p.posted_at or 'N/A'}`) — {cap} ({p.permalink})"
+                    f"{idx}. **`[{p.media_type}]`** (likes={_fmt_num(p.likes)}, comments={_fmt_num(p.comments)}, plays={_fmt_num(p.plays)}, posted=`{p.posted_at or 'Not observed'}`) — {cap} ({p.permalink})"
                 )
             lines.append("")
 
@@ -235,7 +288,32 @@ class InstagramAccountAnalyzer:
             [
                 "---",
                 "",
-                "## 3. When to Post (Historical & Audience Timing Analysis)",
+                "## 2. Heuristic Inferences (Derived Signals With Sample Size & Confidence)",
+                "",
+                f"- **Inferred Content Niche:** **{report.detected_niche}**",
+                f"- **Inferred Languages:** {', '.join(report.detected_languages) or 'Not determined'}",
+                f"- **Heuristic Audit Score:** **{report.audit_score} / 100**",
+                f"- **Observed Hashtag Frequency Top 10:** {', '.join(report.top_existing_hashtags) or 'None observed'}",
+                "",
+            ]
+        )
+        if report.inferred_heuristic:
+            lines.append("| Signal | Inferred Value | Sample Size | Confidence | Basis |")
+            lines.append("| :--- | :--- | :---: | :---: | :--- |")
+            for sig in report.inferred_heuristic:
+                val_txt = str(sig.get("value", "")).replace("|", "/")[:90]
+                lines.append(
+                    f"| `{sig.get('signal')}` | {val_txt} | {sig.get('sample_size', 0)} | `{sig.get('confidence', 'none')}` | {sig.get('basis', '')} |"
+                )
+            lines.append("")
+
+        lines.extend(
+            [
+                "---",
+                "",
+                "## 3. Recommended Strategy & Content Plan (AI / Rule Recommendations — Not Observed Facts)",
+                "",
+                "### Posting Window Suggestions",
                 "",
             ]
         )
@@ -245,9 +323,7 @@ class InstagramAccountAnalyzer:
         lines.extend(
             [
                 "",
-                "---",
-                "",
-                "## 4. Algorithm Growth Gaps & What to Fix",
+                "### Algorithm Growth Gaps & Actionable Improvements",
                 "",
             ]
         )
@@ -257,11 +333,7 @@ class InstagramAccountAnalyzer:
         lines.extend(
             [
                 "",
-                "---",
-                "",
-                "## 5. Recommended Content Pillars & Next Post Ideas (Based on Existing Profile)",
-                "",
-                "### Recommended Pillars",
+                "### Recommended Content Pillars",
             ]
         )
         for pil in report.recommended_pillars:
@@ -589,10 +661,10 @@ class InstagramAccountAnalyzer:
                     "permalink": f"https://www.instagram.com/{kind}/{code}/",
                     "media_type": "REEL" if kind == "reel" else "IMAGE",
                     "caption": str(anc.get("alt") or "").strip(),
-                    "like_count": 0,
-                    "comments_count": 0,
-                    "play_count": 0,
-                    "taken_at": 0,
+                    "like_count": None,
+                    "comments_count": None,
+                    "play_count": None,
+                    "taken_at": None,
                 }
             )
 
@@ -686,11 +758,14 @@ class InstagramAccountAnalyzer:
         category: str,
         biography: str,
         niche_hint: str,
-        followers: int,
-        following: int,
-        media_count: int,
+        followers: int | None,
+        following: int | None,
+        media_count: int | None,
         raw_posts: list[dict[str, Any]],
         data_source: str,
+        captured_at: str = "",
+        ig_user_id: str = "",
+        website: str = "",
     ) -> AccountAuditReport:
         analyzed_posts: list[AnalyzedPostItem] = []
         hashtag_counter: Counter[str] = Counter()
@@ -716,10 +791,10 @@ class InstagramAccountAnalyzer:
                 mtype = "CAROUSEL"
             format_counter[mtype] += 1
 
-            likes = int(rp.get("like_count") or 0)
-            comments = int(rp.get("comments_count") or 0)
-            plays = int(rp.get("play_count") or 0)
-            taken_at = int(rp.get("taken_at") or 0)
+            likes = int(rp["like_count"]) if rp.get("like_count") is not None else None
+            comments = int(rp["comments_count"]) if rp.get("comments_count") is not None else None
+            plays = int(rp["play_count"]) if rp.get("play_count") is not None else None
+            taken_at = int(rp["taken_at"]) if rp.get("taken_at") is not None else 0
 
             posted_str = ""
             posted_hr = -1
@@ -742,8 +817,13 @@ class InstagramAccountAnalyzer:
                 if m_code:
                     code = m_code.group(1)
 
-            eng_pts = round(likes * 1.0 + comments * 3.0 + plays * 0.05, 1)
-            if posted_hr >= 0:
+            has_any_eng = any(v is not None for v in (likes, comments, plays))
+            eng_pts: float | None = (
+                round((likes or 0) * 1.0 + (comments or 0) * 3.0 + (plays or 0) * 0.05, 1)
+                if has_any_eng
+                else None
+            )
+            if posted_hr >= 0 and eng_pts is not None:
                 hour_engagement.setdefault(posted_hr, []).append(eng_pts)
 
             analyzed_posts.append(
@@ -759,11 +839,16 @@ class InstagramAccountAnalyzer:
                     posted_at=posted_str,
                     posted_hour_pkt=posted_hr,
                     engagement_points=eng_pts,
+                    source=data_source,
                 )
             )
 
         top_hashtags = [tag for tag, _ in hashtag_counter.most_common(10)]
-        top_posts = sorted(analyzed_posts, key=lambda x: x.engagement_points, reverse=True)[:5]
+        top_posts = sorted(
+            analyzed_posts,
+            key=lambda x: x.engagement_points if x.engagement_points is not None else -1.0,
+            reverse=True,
+        )[:5]
 
         # Auto-discover Niche & Themes directly from the profile's real posts, hashtags, and bio
         corpus = " ".join([biography, category, *all_captions_text, *top_hashtags]).lower()
@@ -782,13 +867,16 @@ class InstagramAccountAnalyzer:
 
         languages = ["Urdu", "English"] if has_urdu else ["English"]
 
-        avg_likes = round(sum(p.likes for p in analyzed_posts) / len(analyzed_posts), 1) if analyzed_posts else 0.0
-        avg_comments = round(sum(p.comments for p in analyzed_posts) / len(analyzed_posts), 1) if analyzed_posts else 0.0
-        reel_items = [p for p in analyzed_posts if p.plays > 0]
-        avg_plays = round(sum(p.plays for p in reel_items) / len(reel_items), 1) if reel_items else 0.0
+        liked_vals = [p.likes for p in analyzed_posts if p.likes is not None]
+        comment_vals = [p.comments for p in analyzed_posts if p.comments is not None]
+        reel_plays = [p.plays for p in analyzed_posts if p.plays is not None]
+        avg_likes = round(sum(liked_vals) / len(liked_vals), 1) if liked_vals else None
+        avg_comments = round(sum(comment_vals) / len(comment_vals), 1) if comment_vals else None
+        avg_plays = round(sum(reel_plays) / len(reel_plays), 1) if reel_plays else None
 
         # Derive best posting windows from actual historical post timestamps
         best_windows: list[str] = []
+        observed_hour_sample = sum(len(v) for v in hour_engagement.values())
         if hour_engagement:
             ranked_hours = sorted(
                 hour_engagement.items(),
@@ -799,30 +887,35 @@ class InstagramAccountAnalyzer:
                 avg_sc = round(sum(scores) / len(scores), 1)
                 end_hr = (hr + 2) % 24
                 best_windows.append(
-                    f"{hr:02d}:00-{end_hr:02d}:00 PKT (Historical Avg Engagement Score: {avg_sc} across {len(scores)} post(s))"
+                    f"{hr:02d}:00-{end_hr:02d}:00 PKT (Observed sample avg score: {avg_sc} across {len(scores)} post(s))"
                 )
         if not best_windows:
             best_windows = [
-                "19:00-22:00 PKT (Peak evening Reel & Story scroll window in Pakistan)",
-                "14:00-16:00 PKT (Afternoon break Carousel & Cheatsheet save window)",
-                "09:00-11:00 PKT (Morning commute discovery window)",
+                "19:00-22:00 PKT (Heuristic baseline window — no historical post timestamps observed)",
+                "14:00-16:00 PKT (Heuristic afternoon window — no historical post timestamps observed)",
+                "09:00-11:00 PKT (Heuristic morning window — no historical post timestamps observed)",
             ]
 
-        # Build existing content summary from actual analyzed posts
+        # Build existing content summary strictly from verified observed fields
         reels_cnt = format_counter.get("REEL", 0)
         imgs_cnt = format_counter.get("IMAGE", 0)
         cars_cnt = format_counter.get("CAROUSEL", 0)
+        followers_txt = f"{followers:,}" if followers is not None else "Not observed (null)"
+        media_cnt_txt = f"{media_count:,}" if media_count is not None else "Not observed (null)"
         if analyzed_posts:
             top_p = top_posts[0]
             existing_summary = (
-                f"Analyzed {len(analyzed_posts)} recent posts on {handle} "
+                f"Observed {len(analyzed_posts)} recent posts on {handle} via {data_source} "
                 f"({reels_cnt} Reels, {cars_cnt} Carousels, {imgs_cnt} Photo posts). "
-                f"Content uses {'bilingual Urdu + English storytelling' if has_urdu else 'English commentary'} "
-                f"with top hashtags {', '.join(top_hashtags[:5]) or 'none'}. "
-                f"Best recent post ({top_p.permalink}) earned {top_p.likes} likes, {top_p.comments} comments, and {top_p.plays} plays."
+                f"Detected hashtags: {', '.join(top_hashtags[:5]) or 'none'}. "
+                f"Top observed recent post ({top_p.permalink}) recorded likes={top_p.likes}, "
+                f"comments={top_p.comments}, plays={top_p.plays}."
             )
         else:
-            existing_summary = f"Profile {handle} has {media_count} total posts and {followers} followers."
+            existing_summary = (
+                f"No live media posts were fetched (source={data_source}); "
+                f"observed profile counts: followers={followers_txt}, total_posts={media_cnt_txt}."
+            )
 
         # Build niche-specific pillars & post ideas grounded in the account's actual content
         if "Drama" in detected_niche or has_urdu:
@@ -869,41 +962,131 @@ class InstagramAccountAnalyzer:
             gaps.append(
                 f"Missing Carousels: 0 of your last {len(analyzed_posts)} posts are Carousels ({reels_cnt} Reels, {imgs_cnt} Photos). Adding 2 Carousels/week will boost your Save-to-Reach ratio."
             )
-        if followers < 1000 and media_count > 100:
+        if followers is not None and media_count is not None and followers < 1000 and media_count > 100:
             gaps.append(
-                f"Conversion Gap ({followers} followers across {media_count} posts): Your bio ('{biography[:65]}...') is poetic/personal rather than telling newReel viewers why to follow. Add a clear topic promise + CTA line."
+                f"Conversion Gap ({followers} followers across {media_count} posts): Your bio ('{biography[:65]}...') does not yet state a clear value proposition + CTA for visitors."
             )
         lang_label = "/".join(languages)
         gaps.extend(
             [
                 f"Hook Retention: Burn high-contrast {lang_label} pop captions in the first 3 seconds of every Reel for muted scrollers.",
                 "Save-to-Reach Ratio: Pair Reels with 6-slide 4:5 Infographic Carousels and Single-Pic Cheatsheets so visitors bookmark your profile.",
-                f"Best Posting Cadence: Concentrate uploads in your top engagement window ({best_windows[0]}).",
+                f"Best Posting Cadence: Concentrate uploads in your candidate window ({best_windows[0]}).",
             ]
         )
 
         format_strategy = {
-            "reel": "45% of mix — Continue your strong Reel momentum with burned-in pop captions & punchy 3s hooks.",
-            "carousel": "25% of mix — Turn your best episode/topic summaries into 6-slide swipeable decks for high Saves.",
+            "reel": "45% of mix — Short vertical Reels with burned-in captions & 3s hooks.",
+            "carousel": "25% of mix — 6-slide swipeable decks designed for high Saves.",
             "slide_video": "15% of mix — Animated motion summary reels for fast daily recaps.",
-            "single_pic": "5% of mix — Punchy quote / satire / cheatsheet card for Story reshares.",
-            "text_post": "5% of mix — Bilingual Urdu/English note card + long caption for comment debates.",
-            "story": "5% of mix — 3-frame Poll & Slider stories right after posting a Reel.",
+            "single_pic": "5% of mix — Punchy quote / cheatsheet card for Story reshares.",
+            "text_post": "5% of mix — Bilingual text note card + long caption for comment discussion.",
+            "story": "5% of mix — 3-frame interactive stories right after posting.",
         }
 
-        score = 78.0
+        score = 60.0
+        if data_source == "graph_api":
+            score += 15.0
+        elif analyzed_posts:
+            score += 12.0
         if analyzed_posts:
             score += 8.0
         if reels_cnt >= 5:
             score += 4.0
+        if cars_cnt >= 2:
+            score += 3.0
         score = min(round(score, 1), 95.0)
 
         bio_diagnosis = (
-            f"Profile {handle} ({display_name} · {category or 'Creator'}) has {followers} followers, "
-            f"{following} following, and {media_count} posts. "
-            f"Current Bio: \"{biography or 'None'}\". "
-            f"Auto-detected theme from your actual posts: '{detected_niche}'."
+            f"Profile {handle} ({display_name} · {category or 'Unobserved category'}) | "
+            f"followers={followers_txt}, following={following if following is not None else 'Not observed (null)'}, "
+            f"posts={media_cnt_txt}. Observed Bio: \"{biography or 'Not observed'}\"."
         )
+
+        sample_n = len(analyzed_posts)
+        niche_conf = (
+            "medium"
+            if (sample_n >= 5 or bool(biography))
+            else ("low" if sample_n > 0 else "none")
+        )
+        time_conf = (
+            "high"
+            if observed_hour_sample >= 12
+            else ("medium" if observed_hour_sample >= 4 else ("low" if observed_hour_sample > 0 else "none"))
+        )
+        audit_conf = "medium" if data_source == "graph_api" and sample_n >= 5 else ("low" if sample_n > 0 else "none")
+
+        verified_observed = {
+            "provenance": "verified_observed",
+            "source": data_source,
+            "captured_at": captured_at,
+            "ig_user_id": ig_user_id or None,
+            "handle": handle,
+            "display_name": display_name,
+            "category": category or None,
+            "biography": biography or None,
+            "website": website or None,
+            "followers_count": followers,
+            "following_count": following,
+            "media_count": media_count,
+            "observed_media_count": sample_n,
+            "existing_format_breakdown": dict(format_counter),
+            "avg_likes": avg_likes,
+            "avg_comments": avg_comments,
+            "avg_plays": avg_plays,
+            "note": (
+                "Fields with null were not returned by the selected data source and are never replaced with 0."
+            ),
+        }
+
+        inferred_heuristic = [
+            {
+                "provenance": "inferred_heuristic",
+                "signal": "detected_niche",
+                "value": detected_niche,
+                "sample_size": sample_n,
+                "confidence": niche_conf,
+                "basis": "Operator niche hint" if niche_hint else "Caption + hashtag keyword clustering",
+            },
+            {
+                "provenance": "inferred_heuristic",
+                "signal": "detected_languages",
+                "value": ", ".join(languages),
+                "sample_size": sample_n,
+                "confidence": "medium" if sample_n > 0 or bool(biography) else "none",
+                "basis": "Unicode script scan over bio and recent captions",
+            },
+            {
+                "provenance": "inferred_heuristic",
+                "signal": "best_posting_windows",
+                "value": best_windows[0],
+                "sample_size": observed_hour_sample,
+                "confidence": time_conf,
+                "basis": (
+                    "Observed publish-hour engagement average"
+                    if observed_hour_sample > 0
+                    else "Default timezone window heuristic (no timestamps observed)"
+                ),
+            },
+            {
+                "provenance": "inferred_heuristic",
+                "signal": "audit_score",
+                "value": score,
+                "sample_size": sample_n,
+                "confidence": audit_conf,
+                "basis": "Rule-based readiness score (data completeness + format diversity)",
+            },
+        ]
+
+        ai_recommended = {
+            "provenance": "ai_recommended",
+            "note": "Actionable strategy suggestions (require operator judgment; not observed profile facts).",
+            "algorithm_gaps": gaps,
+            "format_strategy": format_strategy,
+            "recommended_pillars": pillars,
+            "recommended_keywords": keywords,
+            "top_post_ideas": top_ideas,
+        }
 
         return AccountAuditReport(
             handle=handle,
@@ -919,6 +1102,7 @@ class InstagramAccountAnalyzer:
             existing_format_breakdown=dict(format_counter),
             audit_score=score,
             data_source=data_source,
+            captured_at=captured_at,
             bio_diagnosis=bio_diagnosis,
             existing_content_summary=existing_summary,
             best_posting_windows_from_history=best_windows,
@@ -933,6 +1117,9 @@ class InstagramAccountAnalyzer:
             avg_likes=avg_likes,
             avg_comments=avg_comments,
             avg_plays=avg_plays,
+            verified_observed=verified_observed,
+            inferred_heuristic=inferred_heuristic,
+            ai_recommended=ai_recommended,
         )
 
     def _update_env_credentials(

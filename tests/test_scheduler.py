@@ -58,6 +58,7 @@ def test_scheduler_worker_processes_due_draft(tmp_path):
         )
     )
     draft_id = int(res["draft"]["id"])
+    pipeline.approve_draft(draft_id)
     past_due = (datetime.now(ZoneInfo("Asia/Karachi")) - timedelta(minutes=2)).isoformat()
     sched_id = db.create_schedule(draft_id, past_due)
 
@@ -68,7 +69,7 @@ def test_scheduler_worker_processes_due_draft(tmp_path):
     schedules = db.list_schedules()
     match = next(s for s in schedules if s["id"] == sched_id)
     assert match["status"] == "completed"
-    assert db.get_draft(draft_id)["approval_status"] == "published"
+    assert db.get_draft(draft_id)["approval_status"] == "exported"
 
 
 def test_daily_draft_cadence_is_idempotent(tmp_path):
@@ -113,10 +114,20 @@ def test_scheduler_does_not_retry_duplicate_publish(tmp_path):
         )
     )
     draft_id = int(res["draft"]["id"])
-    asyncio.run(pipeline.publish_draft(draft_id, mode="export"))
+    pipeline.approve_draft(draft_id)
+    db.record_publish(draft_id, mode="graph_api", ig_media_id="M_EXISTING_1")
 
     past_due = (datetime.now(ZoneInfo("Asia/Karachi")) - timedelta(minutes=1)).isoformat()
-    sched_id = db.create_schedule(draft_id, past_due)
+    now_iso = db.now_iso()
+    with db.connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO schedules (draft_id, scheduled_for, status, attempts, last_error, created_at, updated_at)
+            VALUES (?, ?, 'queued', 0, '', ?, ?)
+            """,
+            (draft_id, past_due, now_iso, now_iso),
+        )
+        sched_id = int(cur.lastrowid)
 
     worker = SchedulerWorker(settings, db)
     processed = worker.process_due_schedules()
