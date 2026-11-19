@@ -90,3 +90,38 @@ def test_daily_draft_cadence_is_idempotent(tmp_path):
     # Calling again the same day must not create duplicate daily batches
     second_count = worker.run_daily_draft_cadence(dry_run_reel=True)
     assert second_count == 0
+
+
+def test_scheduler_does_not_retry_duplicate_publish(tmp_path):
+    settings = Settings(
+        smai_data_dir=tmp_path / "data",
+        smai_export_dir=tmp_path / "exports",
+        smai_llm_provider="mock",
+        smai_tts_provider="silent",
+        smai_publish_mode="export",
+        smai_enable_network_scout=False,
+        smai_prefer_playwright=False,
+    )
+    db = get_database(settings)
+    pipeline = SmaiPipeline(settings, db)
+    res = asyncio.run(
+        pipeline.generate_draft(
+            fmt="single_pic",
+            custom_topic="Already published draft",
+            render_media=True,
+            prefer_playwright=False,
+        )
+    )
+    draft_id = int(res["draft"]["id"])
+    asyncio.run(pipeline.publish_draft(draft_id, mode="export"))
+
+    past_due = (datetime.now(ZoneInfo("Asia/Karachi")) - timedelta(minutes=1)).isoformat()
+    sched_id = db.create_schedule(draft_id, past_due)
+
+    worker = SchedulerWorker(settings, db)
+    processed = worker.process_due_schedules()
+    assert processed == 0
+
+    match = next(s for s in db.list_schedules() if s["id"] == sched_id)
+    assert match["status"] == "failed"
+    assert match["attempts"] == 1

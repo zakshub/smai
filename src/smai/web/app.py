@@ -18,7 +18,12 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat, InsightSnapshot
 from smai.pipeline import SmaiPipeline
-from smai.publishing import InstagramBrowserAutomator, InstagramGraphClient
+from smai.publishing import (
+    DuplicatePublishError,
+    InstagramBrowserAutomator,
+    InstagramGraphClient,
+    MetaAPIError,
+)
 from smai.scheduler import SchedulerWorker, pick_next_window_slot
 
 
@@ -228,21 +233,29 @@ def create_app(
         await automator.launch_login_window(wait_seconds=90)
         return RedirectResponse(url="/", status_code=303)
 
+    async def _run_publish(draft_id: int, mode: str | None = None) -> RedirectResponse:
+        pipeline = SmaiPipeline(cfg, db)
+        try:
+            await pipeline.publish_draft(draft_id, mode=mode)
+        except DuplicatePublishError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except MetaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return RedirectResponse(url="/", status_code=303)
+
     @app.post("/drafts/{draft_id}/ig-browser")
     async def action_publish_ig_browser(
         draft_id: int,
         auto_share: str = Form("0"),
     ) -> RedirectResponse:
-        pipeline = SmaiPipeline(cfg, db)
         mode = "browser_share" if auto_share == "1" else "browser"
-        await pipeline.publish_draft(draft_id, mode=mode)
-        return RedirectResponse(url="/", status_code=303)
+        return await _run_publish(draft_id, mode=mode)
 
     @app.post("/drafts/{draft_id}/publish")
     async def action_publish(draft_id: int) -> RedirectResponse:
-        pipeline = SmaiPipeline(cfg, db)
-        await pipeline.publish_draft(draft_id)
-        return RedirectResponse(url="/", status_code=303)
+        return await _run_publish(draft_id)
 
     @app.post("/insights/record")
     def action_record_insight(

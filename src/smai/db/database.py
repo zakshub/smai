@@ -526,6 +526,72 @@ class Database:
                     (status, last_error, now, schedule_id),
                 )
 
+    def claim_publish_lock(self, draft_id: int, mode: str) -> str | None:
+        """
+        Atomically claim an in-flight publish lock for a draft so accidental or
+        concurrent duplicate publishing is blocked. Returns previous approval_status
+        when lock is acquired, or None if already published / publishing.
+        """
+        now = self.now_iso()
+        con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = ON")
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT approval_status FROM drafts WHERE id = ?", (draft_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Draft {draft_id} not found.")
+            prev_status = str(row["approval_status"])
+            if prev_status in ("published", "publishing"):
+                con.rollback()
+                return None
+
+            existing_log = con.execute(
+                "SELECT id, mode, ig_media_id FROM publish_logs WHERE draft_id = ?",
+                (draft_id,),
+            ).fetchall()
+            for log in existing_log:
+                if log["mode"] == "graph_api" or log["ig_media_id"]:
+                    con.rollback()
+                    return None
+                if log["mode"] == mode:
+                    con.rollback()
+                    return None
+
+            con.execute(
+                "UPDATE drafts SET approval_status = 'publishing', updated_at = ? WHERE id = ?",
+                (now, draft_id),
+            )
+            con.commit()
+            return prev_status
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
+
+    def release_publish_lock(self, draft_id: int, previous_status: str) -> None:
+        """Restore approval_status if a publish attempt failed before completing."""
+        with self.connect() as con:
+            con.execute(
+                """
+                UPDATE drafts
+                SET approval_status = ?, updated_at = ?
+                WHERE id = ? AND approval_status = 'publishing'
+                """,
+                (previous_status, self.now_iso(), draft_id),
+            )
+
+    def get_publish_logs_for_draft(self, draft_id: int) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute(
+                "SELECT * FROM publish_logs WHERE draft_id = ? ORDER BY id DESC",
+                (draft_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def record_publish(
         self,
         draft_id: int,

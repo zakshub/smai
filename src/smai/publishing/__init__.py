@@ -2,10 +2,16 @@
 
 from smai.publishing.exporter import export_draft_bundle
 from smai.publishing.ig_browser import InstagramBrowserAutomator
-from smai.publishing.instagram_api import InstagramGraphClient, MetaAPIError, redact_secret
+from smai.publishing.instagram_api import (
+    DuplicatePublishError,
+    InstagramGraphClient,
+    MetaAPIError,
+    redact_secret,
+)
 from smai.publishing.storage import MediaStagingService
 
 __all__ = [
+    "DuplicatePublishError",
     "InstagramBrowserAutomator",
     "InstagramGraphClient",
     "MediaStagingService",

@@ -13,7 +13,12 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat
 from smai.pipeline import SmaiPipeline
-from smai.publishing import InstagramBrowserAutomator, InstagramGraphClient
+from smai.publishing import (
+    DuplicatePublishError,
+    InstagramBrowserAutomator,
+    InstagramGraphClient,
+    MetaAPIError,
+)
 from smai.web.app import create_app
 
 
@@ -177,8 +182,12 @@ def publish(
     settings = Settings()
     db = get_database(settings)
     pipeline = SmaiPipeline(settings, db)
-    res = asyncio.run(pipeline.publish_draft(draft_id, mode=mode or None))
-    typer.echo(json.dumps(res, indent=2))
+    try:
+        res = asyncio.run(pipeline.publish_draft(draft_id, mode=mode or None))
+        typer.echo(json.dumps(res, indent=2))
+    except (DuplicatePublishError, MetaAPIError, ValueError, RuntimeError) as exc:
+        typer.echo(json.dumps({"error": str(exc)}, indent=2), err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

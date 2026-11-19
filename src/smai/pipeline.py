@@ -12,6 +12,7 @@ from smai.db.database import Database
 from smai.db.models import ContentFormat, ContentPackage, QAReport, TopicCandidate
 from smai.media import CarouselBuilder, ReelBuilder
 from smai.publishing import (
+    DuplicatePublishError,
     InstagramBrowserAutomator,
     InstagramGraphClient,
     MediaStagingService,
@@ -22,7 +23,12 @@ from smai.publishing import (
 class SmaiPipeline:
     """Coordinates Scout -> Strategist -> Writer -> Media Render -> Critic QA -> Draft/Publish."""
 
-    def __init__(self, settings: Settings, db: Database) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database,
+        graph_client: InstagramGraphClient | None = None,
+    ) -> None:
         self.settings = settings
         self.db = db
         self.llm = LLMClient(settings, db=db)
@@ -32,6 +38,7 @@ class SmaiPipeline:
         self.analyst = AnalystAgent(db)
         self.carousel_builder = CarouselBuilder()
         self.reel_builder = ReelBuilder(settings)
+        self._graph_client = graph_client
 
     def ensure_brand(self, slug: str | None = None) -> tuple[BrandBrain, int]:
         target = slug or self.settings.smai_default_brand
@@ -277,65 +284,85 @@ class SmaiPipeline:
         draft = self.db.get_draft(draft_id)
         if not draft:
             raise ValueError(f"Draft {draft_id} not found.")
-        assets = self.db.list_media_assets(draft_id)
-        if not assets:
-            assets = await self.render_draft(draft_id)
-            assets = self.db.list_media_assets(draft_id)
 
-        image_assets = [a for a in assets if a["asset_type"] == "slide_png"]
         target_mode = (mode or self.settings.smai_publish_mode).lower().strip()
-
-        if target_mode in ("browser", "browser_share"):
-            automator = InstagramBrowserAutomator(self.settings)
-            if draft["format"] in ("reel", "slide_video"):
-                upload_paths = [Path(a["local_path"]) for a in assets if a["local_path"].endswith(".mp4")]
-            else:
-                upload_paths = [Path(a["local_path"]) for a in image_assets]
-            res_browser = await automator.upload_draft_to_instagram(
-                media_paths=upload_paths,
-                caption=draft["caption"],
-                auto_share=(target_mode == "browser_share"),
+        prev_status = self.db.claim_publish_lock(draft_id, target_mode)
+        if prev_status is None:
+            raise DuplicatePublishError(
+                f"Draft {draft_id} has already been published or is currently publishing."
             )
+
+        try:
+            assets = self.db.list_media_assets(draft_id)
+            if not assets:
+                assets = await self.render_draft(draft_id)
+                assets = self.db.list_media_assets(draft_id)
+
+            image_assets = [a for a in assets if a["asset_type"] == "slide_png"]
+
+            if target_mode in ("browser", "browser_share"):
+                automator = InstagramBrowserAutomator(self.settings)
+                if draft["format"] in ("reel", "slide_video"):
+                    upload_paths = [
+                        Path(a["local_path"]) for a in assets if a["local_path"].endswith(".mp4")
+                    ]
+                else:
+                    upload_paths = [Path(a["local_path"]) for a in image_assets]
+                res_browser = await automator.upload_draft_to_instagram(
+                    media_paths=upload_paths,
+                    caption=draft["caption"],
+                    auto_share=(target_mode == "browser_share"),
+                )
+                log_id = self.db.record_publish(
+                    draft_id=draft_id,
+                    mode=target_mode,
+                    permalink="https://www.instagram.com/",
+                    export_path=",".join(res_browser["files_uploaded"]),
+                )
+                return {"publish_log_id": log_id, **res_browser}
+
+            if target_mode == "graph_api":
+                staging = MediaStagingService(self.settings)
+                client = self._graph_client or InstagramGraphClient(self.settings)
+                target_assets = (
+                    image_assets
+                    if draft["format"] in ("carousel", "single_pic", "text_post", "story")
+                    else assets
+                )
+                if not target_assets:
+                    raise ValueError(f"No publishable media assets found for draft {draft_id}.")
+
+                urls: list[str] = []
+                for asset in target_assets:
+                    url = staging.resolve_public_url(Path(asset["local_path"]))
+                    self.db.update_asset_public_url(int(asset["id"]), url)
+                    urls.append(url)
+
+                if draft["format"] in ("reel", "slide_video"):
+                    res = await client.publish_reel(urls[0], draft["caption"])
+                elif draft["format"] == "story":
+                    res = await client.publish_story(urls[0])
+                elif len(urls) == 1:
+                    res = await client.publish_image(urls[0], draft["caption"])
+                else:
+                    res = await client.publish_carousel(urls, draft["caption"])
+
+                log_id = self.db.record_publish(
+                    draft_id=draft_id,
+                    mode="graph_api",
+                    ig_container_id=res.get("ig_container_id", ""),
+                    ig_media_id=res.get("ig_media_id", ""),
+                    permalink=res.get("permalink", ""),
+                )
+                return {"publish_log_id": log_id, "mode": "graph_api", **res}
+
+            bundle_dir = export_draft_bundle(draft, assets, self.settings.resolve_export_dir())
             log_id = self.db.record_publish(
                 draft_id=draft_id,
-                mode=target_mode,
-                permalink="https://www.instagram.com/",
-                export_path=",".join(res_browser["files_uploaded"]),
+                mode="export",
+                export_path=str(bundle_dir),
             )
-            return {"publish_log_id": log_id, **res_browser}
-
-        if target_mode == "graph_api":
-            staging = MediaStagingService(self.settings)
-            client = InstagramGraphClient(self.settings)
-            target_assets = image_assets if draft["format"] in ("carousel", "single_pic", "text_post", "story") else assets
-            urls: list[str] = []
-            for asset in target_assets:
-                url = staging.resolve_public_url(Path(asset["local_path"]))
-                self.db.update_asset_public_url(int(asset["id"]), url)
-                urls.append(url)
-
-            if draft["format"] in ("reel", "slide_video"):
-                res = await client.publish_reel(urls[0], draft["caption"])
-            elif draft["format"] == "story":
-                res = await client.publish_story(urls[0])
-            elif len(urls) == 1:
-                res = await client.publish_image(urls[0], draft["caption"])
-            else:
-                res = await client.publish_carousel(urls, draft["caption"])
-
-            log_id = self.db.record_publish(
-                draft_id=draft_id,
-                mode="graph_api",
-                ig_container_id=res["ig_container_id"],
-                ig_media_id=res["ig_media_id"],
-                permalink=res["permalink"],
-            )
-            return {"publish_log_id": log_id, "mode": "graph_api", **res}
-
-        bundle_dir = export_draft_bundle(draft, assets, self.settings.resolve_export_dir())
-        log_id = self.db.record_publish(
-            draft_id=draft_id,
-            mode="export",
-            export_path=str(bundle_dir),
-        )
-        return {"publish_log_id": log_id, "mode": "export", "export_path": str(bundle_dir)}
+            return {"publish_log_id": log_id, "mode": "export", "export_path": str(bundle_dir)}
+        except Exception:
+            self.db.release_publish_lock(draft_id, prev_status)
+            raise

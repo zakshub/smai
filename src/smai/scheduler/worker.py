@@ -14,7 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from smai.config import Settings, load_brand
 from smai.db.database import Database
 from smai.pipeline import SmaiPipeline
-from smai.publishing import InstagramGraphClient
+from smai.publishing import DuplicatePublishError, InstagramGraphClient, MetaAPIError
 
 
 def pick_next_window_slot(
@@ -140,6 +140,22 @@ class SchedulerWorker:
                 asyncio.run(pipeline.publish_draft(draft_id))
                 self.db.update_schedule_status(schedule_id, "completed")
                 processed += 1
+            except DuplicatePublishError as exc:
+                self.db.update_schedule_status(
+                    schedule_id,
+                    "failed",
+                    last_error=str(exc),
+                    increment_attempts=True,
+                )
+            except MetaAPIError as exc:
+                attempts = int(row["attempts"]) + 1
+                next_status = "queued" if (exc.is_transient and attempts < 3) else "failed"
+                self.db.update_schedule_status(
+                    schedule_id,
+                    next_status,
+                    last_error=str(exc),
+                    increment_attempts=True,
+                )
             except Exception as exc:
                 attempts = int(row["attempts"]) + 1
                 next_status = "failed" if attempts >= 3 else "queued"
