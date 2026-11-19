@@ -18,7 +18,7 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat, InsightSnapshot
 from smai.pipeline import SmaiPipeline
-from smai.publishing import InstagramBrowserAutomator
+from smai.publishing import InstagramBrowserAutomator, InstagramGraphClient
 from smai.scheduler import SchedulerWorker, pick_next_window_slot
 
 
@@ -89,6 +89,9 @@ def create_app(
                 "llm_provider": f"{cfg.smai_llm_provider} ({cfg.smai_llm_model})",
                 "gemini_key_set": bool(cfg.effective_gemini_key()),
                 "ig_browser_connected": InstagramBrowserAutomator(cfg).has_saved_session(),
+                "meta_api_configured": cfg.has_meta_credentials(),
+                "meta_graph_version": cfg.ig_graph_api_version,
+                "meta_ig_user_id": cfg.ig_user_id,
                 "publish_mode": cfg.smai_publish_mode,
                 "project_root_path": str(cfg.project_root.resolve()),
                 "media_dir_path": str(cfg.media_dir().resolve()),
@@ -99,6 +102,12 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {"status": "ok", "stats": db.dashboard_stats()}
+
+    @app.get("/api/meta/status")
+    async def api_meta_status() -> dict[str, Any]:
+        """Return non-secret Meta Graph API Phase A connection health report."""
+        client = InstagramGraphClient(cfg)
+        return await client.check_connection_health()
 
     @app.get("/api/drafts")
     def api_list_drafts() -> list[dict[str, Any]]:

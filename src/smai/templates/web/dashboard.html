@@ -168,6 +168,7 @@
       </form>
       {% endif %}
       <span class="badge">LLM: {{ llm_provider }} {% if gemini_key_set %}&#10003; Live Key{% else %}(Paste Gemini Key Below){% endif %}</span>
+      <span class="badge">Meta API ({{ meta_graph_version }}): {% if meta_api_configured %}&#10003; ID {{ meta_ig_user_id }}{% else %}Not Configured{% endif %}</span>
       <span class="badge">IG Browser: {% if ig_browser_connected %}&#10003; Session Saved{% else %}Not Logged In{% endif %}</span>
       <span class="badge">Publish: {{ publish_mode }}</span>
     </div>

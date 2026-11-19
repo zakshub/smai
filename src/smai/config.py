@@ -122,16 +122,22 @@ class Settings(BaseSettings):
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
 
-    # Publishing
-    smai_publish_mode: str = "export"  # export | graph_api
+    # Publishing & Meta Graph API
+    smai_publish_mode: str = "export"  # export | graph_api | browser | browser_share
+    meta_app_id: str = ""
+    meta_app_secret: str = ""
     ig_user_id: str = ""
     ig_access_token: str = ""
-    ig_graph_api_version: str = "v21.0"
+    ig_graph_api_version: str = "v27.0"
+    ig_webhook_verify_token: str = ""
     smai_public_media_base_url: str = ""
     s3_bucket: str = ""
     s3_endpoint_url: str = ""
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
+
+    def has_meta_credentials(self) -> bool:
+        return bool(self.ig_user_id.strip() and self.ig_access_token.strip())
 
     def resolve_data_dir(self) -> Path:
         path = self.smai_data_dir

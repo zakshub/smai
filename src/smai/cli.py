@@ -13,7 +13,7 @@ from smai.config import Settings, list_brand_slugs, load_brand
 from smai.db.database import get_database
 from smai.db.models import ContentFormat
 from smai.pipeline import SmaiPipeline
-from smai.publishing import InstagramBrowserAutomator
+from smai.publishing import InstagramBrowserAutomator, InstagramGraphClient
 from smai.web.app import create_app
 
 
@@ -50,6 +50,19 @@ def ig_login(
     automator = InstagramBrowserAutomator(settings)
     res = asyncio.run(automator.launch_login_window(wait_seconds=wait))
     typer.echo(json.dumps(res, indent=2))
+
+
+@app.command()
+def ig_check(
+    ig_user_id: str = typer.Option("", help="Override IG_USER_ID for connection check."),
+) -> None:
+    """Verify Meta Graph API token, assigned Instagram accounts, and profile retrieval."""
+    settings = Settings()
+    client = InstagramGraphClient(settings)
+    report = asyncio.run(client.check_connection_health(ig_user_id=ig_user_id or None))
+    typer.echo(json.dumps(report, indent=2))
+    if not (report["token_valid"] and report["active_account_verified"]):
+        raise typer.Exit(code=1)
 
 
 @app.command()

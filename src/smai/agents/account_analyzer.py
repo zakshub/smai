@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from smai.agents.base import LLMClient
 from smai.config import BrandBrain, Settings, load_brand
 from smai.db.database import Database
+from smai.publishing.instagram_api import InstagramGraphClient
 
 
 class AnalyzedPostItem(BaseModel):
@@ -88,33 +89,39 @@ class InstagramAccountAnalyzer:
     and auto-tunes BrandBrain.
     """
 
-    def __init__(self, settings: Settings, db: Database, llm: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        db: Database,
+        llm: LLMClient | None = None,
+        graph_transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self.settings = settings
         self.db = db
         self.llm = llm or LLMClient(settings, db=db)
         self.tz = ZoneInfo(settings.smai_timezone)
+        self._graph_transport = graph_transport
 
     async def analyze(
         self,
-        handle_or_url: str,
+        handle_or_url: str = "",
         bio_hint: str = "",
         niche_hint: str = "",
         ig_user_id: str = "",
         ig_access_token: str = "",
         enable_network: bool = True,
     ) -> AccountAuditReport:
-        username = normalize_handle(handle_or_url)
-        handle = f"@{username}"
-
         user_id = ig_user_id.strip() or self.settings.ig_user_id.strip()
         token = ig_access_token.strip() or self.settings.ig_access_token.strip()
+        username = normalize_handle(handle_or_url) if handle_or_url.strip() else "mybrand"
+        handle = f"@{username}"
 
         profile_data: dict[str, Any] = {}
         raw_posts: list[dict[str, Any]] = []
         data_source = "handle_inference"
 
-        # 1. Try Official Meta Instagram Graph API if credentials are provided
-        if enable_network and user_id and token:
+        # 1. Try Official Meta Instagram Graph API if token is provided (supports auto-discovery if user_id omitted)
+        if enable_network and token:
             graph_prof, graph_media = await self._fetch_graph_api_profile(user_id, token)
             if graph_prof:
                 profile_data = graph_prof
@@ -125,7 +132,7 @@ class InstagramAccountAnalyzer:
                     handle = f"@{username}"
 
         # 2. Live Playwright Chromium GraphQL + DOM profile & timeline extraction
-        if enable_network and not profile_data:
+        if enable_network and not profile_data and handle_or_url.strip():
             pub_meta, pub_media = await self._fetch_browser_or_public_profile(username)
             if pub_meta:
                 profile_data = pub_meta
@@ -139,7 +146,11 @@ class InstagramAccountAnalyzer:
         )
         category = str(profile_data.get("category") or "").strip()
         followers = int(profile_data.get("followers_count") or 0)
-        following = int(profile_data.get("following_count") or 0)
+        following = int(
+            profile_data.get("following_count")
+            or profile_data.get("follows_count")
+            or 0
+        )
         media_count = int(profile_data.get("media_count") or len(raw_posts))
 
         report = self._build_audit_report(
@@ -590,30 +601,20 @@ class InstagramAccountAnalyzer:
     async def _fetch_graph_api_profile(
         self, ig_user_id: str, access_token: str
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        base = f"https://graph.facebook.com/{self.settings.ig_graph_api_version}"
-        timeout = httpx.Timeout(6.0, connect=3.0)
+        temp_settings = self.settings.model_copy(
+            update={"ig_user_id": ig_user_id, "ig_access_token": access_token}
+        )
+        client = InstagramGraphClient(temp_settings, transport=self._graph_transport)
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                prof_res = await client.get(
-                    f"{base}/{ig_user_id}",
-                    params={
-                        "fields": "username,name,biography,followers_count,follows_count,media_count",
-                        "access_token": access_token,
-                    },
-                )
-                prof_res.raise_for_status()
-                prof = prof_res.json()
-
-                media_res = await client.get(
-                    f"{base}/{ig_user_id}/media",
-                    params={
-                        "fields": "id,caption,media_type,timestamp,like_count,comments_count,permalink",
-                        "limit": 15,
-                        "access_token": access_token,
-                    },
-                )
-                media_list = media_res.json().get("data", []) if media_res.status_code == 200 else []
-                return prof, media_list
+            target_id = ig_user_id.strip()
+            if not target_id:
+                assigned = await client.discover_assigned_accounts()
+                if not assigned:
+                    return {}, []
+                target_id = assigned[0]["id"]
+            prof = await client.get_profile(target_id)
+            media_list = await client.list_media(target_id, limit=15)
+            return prof, media_list
         except Exception:
             return {}, []
 
@@ -708,6 +709,11 @@ class InstagramAccountAnalyzer:
             hashtag_counter.update(tags)
 
             mtype = str(rp.get("media_type") or "REEL").upper()
+            prod_type = str(rp.get("media_product_type") or "").upper()
+            if prod_type == "REELS" or mtype == "VIDEO":
+                mtype = "REEL"
+            elif mtype == "CAROUSEL_ALBUM":
+                mtype = "CAROUSEL"
             format_counter[mtype] += 1
 
             likes = int(rp.get("like_count") or 0)
@@ -721,6 +727,20 @@ class InstagramAccountAnalyzer:
                 dt = datetime.fromtimestamp(taken_at, tz=self.tz)
                 posted_str = dt.strftime("%Y-%m-%d %H:%M PKT")
                 posted_hr = dt.hour
+            elif rp.get("timestamp"):
+                try:
+                    raw_ts = str(rp["timestamp"]).replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(raw_ts).astimezone(self.tz)
+                    posted_str = dt.strftime("%Y-%m-%d %H:%M PKT")
+                    posted_hr = dt.hour
+                except Exception:
+                    pass
+
+            code = str(rp.get("code") or "")
+            if not code and rp.get("permalink"):
+                m_code = re.search(r"/(?:p|reel)/([A-Za-z0-9_-]+)", str(rp["permalink"]))
+                if m_code:
+                    code = m_code.group(1)
 
             eng_pts = round(likes * 1.0 + comments * 3.0 + plays * 0.05, 1)
             if posted_hr >= 0:
@@ -728,7 +748,7 @@ class InstagramAccountAnalyzer:
 
             analyzed_posts.append(
                 AnalyzedPostItem(
-                    code=str(rp.get("code") or ""),
+                    code=code or str(rp.get("id") or ""),
                     permalink=str(rp.get("permalink") or ""),
                     media_type=mtype,
                     caption_excerpt=cap[:180],
@@ -853,9 +873,11 @@ class InstagramAccountAnalyzer:
             gaps.append(
                 f"Conversion Gap ({followers} followers across {media_count} posts): Your bio ('{biography[:65]}...') is poetic/personal rather than telling newReel viewers why to follow. Add a clear topic promise + CTA line."
             )
+        lang_label = "/".join(languages)
         gaps.extend(
             [
-                "Hook Retention: Burn high-contrast Urdu/English pop captions in the first 3 seconds of every Reel for muted scrollers.",
+                f"Hook Retention: Burn high-contrast {lang_label} pop captions in the first 3 seconds of every Reel for muted scrollers.",
+                "Save-to-Reach Ratio: Pair Reels with 6-slide 4:5 Infographic Carousels and Single-Pic Cheatsheets so visitors bookmark your profile.",
                 f"Best Posting Cadence: Concentrate uploads in your top engagement window ({best_windows[0]}).",
             ]
         )
