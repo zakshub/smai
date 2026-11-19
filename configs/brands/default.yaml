@@ -1,93 +1,110 @@
 slug: default
-name: Quiet Leverage
-handle: "@quietleverage.ai"
-niche: "AI Systems, Solopreneur Leverage & Digital Productivity"
-audience: "Ambitious builders, freelancers, and creators wanting calm, high-output systems without burnout."
-timezone: "Asia/Karachi"
-
+name: zaks
+handle: '@zuhaibdotpro'
+niche: Pakistani Drama Reviews, Episode Summaries & Cultural Storytelling Reels
+audience: Ambitious builders, freelancers, and creators wanting calm, high-output
+  systems without burnout.
+timezone: Asia/Karachi
 audience_segments:
-  - name: "Solo Freelancers & Indie Builders"
-    pain_points:
-      - "Drowning in repetitive admin and manual client tasks"
-      - "Overwhelmed by AI hype without practical workflows"
-    preferred_formats: ["carousel", "reel"]
-    peak_hours: [9, 11]
-  - name: "9-to-5 Creators & Side-Hustlers"
-    pain_points:
-      - "Only 60-90 minutes/day after work to build an audience"
-      - "Need fast, saveable checklists and punchy reminders"
-    preferred_formats: ["reel", "single_pic", "text_post"]
-    peak_hours: [19, 22]
-  - name: "Digital Operators & Notion/Automation Nerds"
-    pain_points:
-      - "Want deep system breakdowns, prompts, and mental models"
-    preferred_formats: ["carousel", "text_post", "story"]
-    peak_hours: [14, 16]
-
+- name: Solo Freelancers & Indie Builders
+  pain_points:
+  - Drowning in repetitive admin and manual client tasks
+  - Overwhelmed by AI hype without practical workflows
+  preferred_formats:
+  - carousel
+  - reel
+  peak_hours:
+  - 9
+  - 11
+- name: 9-to-5 Creators & Side-Hustlers
+  pain_points:
+  - Only 60-90 minutes/day after work to build an audience
+  - Need fast, saveable checklists and punchy reminders
+  preferred_formats:
+  - reel
+  - single_pic
+  - text_post
+  peak_hours:
+  - 19
+  - 22
+- name: Digital Operators & Notion/Automation Nerds
+  pain_points:
+  - Want deep system breakdowns, prompts, and mental models
+  preferred_formats:
+  - carousel
+  - text_post
+  - story
+  peak_hours:
+  - 14
+  - 16
 regular_cadence:
-  daily_mix: ["reel", "slide_video", "carousel", "single_pic", "text_post", "story"]
+  daily_mix:
+  - reel
+  - slide_video
+  - carousel
+  - single_pic
+  - text_post
+  - story
   posts_per_day: 2
   daily_draft_hour: 8
   auto_draft_only: true
-
 pillars:
-  - "AI workflow automation that saves 5+ hours/week"
-  - "Mental models for solo leverage and compounding"
-  - "Underrated tools, prompts, and systems breakdown"
-  - "Anti-hustle discipline and deep-work architecture"
-
+- Sharp episode summaries & hidden character takeaways (Urdu + English)
+- Satirical & insightful breakdowns of trending Pakistani drama arcs
+- 60-second Reel recaps with bold pop captions & emotional hooks
+- Carousel comparisons of top weekly drama moments & dialogues
 tone:
-  voice: "Sharp, calm, editorial, zero hype, concrete numbers over fluff"
-  reading_level: "Grade 7-9 punchy sentences"
+  voice: Sharp, calm, editorial, zero hype, concrete numbers over fluff
+  reading_level: Grade 7-9 punchy sentences
   max_words_per_slide: 28
   max_reel_seconds: 45
-
 banned_phrases:
-  - "unlock your full potential"
-  - "game changer"
-  - "in today's fast-paced world"
-  - "smash that follow"
-  - "hustle 24/7"
-
+- unlock your full potential
+- game changer
+- in today's fast-paced world
+- smash that follow
+- hustle 24/7
 visual_style:
-  carousel_theme: "editorial-dark"
-  primary_color: "#0F172A"
-  accent_color: "#38BDF8"
-  text_color: "#F8FAFC"
-  muted_color: "#94A3B8"
-  font_family: "Inter, system-ui, sans-serif"
-  watermark: "@quietleverage.ai"
-
+  carousel_theme: editorial-dark
+  primary_color: '#0F172A'
+  accent_color: '#38BDF8'
+  text_color: '#F8FAFC'
+  muted_color: '#94A3B8'
+  font_family: Inter, system-ui, sans-serif
+  watermark: '@zuhaibdotpro'
 cta_bank:
-  - "Save this system before your feed buries it."
-  - "Send this to a builder who still does this manually."
-  - "Bookmark this breakdown and test step 1 today."
-
+- Save this system before your feed buries it.
+- Send this to a builder who still does this manually.
+- Bookmark this breakdown and test step 1 today.
 hashtags:
   core:
-    - "#aitools"
-    - "#solopreneur"
-    - "#productivitysystems"
-    - "#digitalleverage"
-    - "#workflowautomation"
-
+  - '#greenentertainment'
+  - '#mittidebaway'
+  - '#paarchannade'
+  - '#mitidebaway'
+  - '#wahajali'
 scout_sources:
   rss:
-    - "https://hnrss.org/frontpage"
+  - https://hnrss.org/frontpage
   keywords:
-    - "AI workflow automation solopreneur"
-    - "creator productivity systems"
+  - Pakistani drama review
+  - Green Entertainment drama episode summary
+  - trending Pakistani drama reels
   subreddits:
-    - "productivity"
-    - "SideProject"
+  - productivity
+  - SideProject
   seed_topics:
-    - "3-step AI morning brief that replaces 45 minutes of inbox triage"
-    - "Why most automation fails: automating broken steps instead of deleting them"
-    - "The 1-person content engine: turning one deep idea into 5 assets"
-    - "Stop collecting prompts: build repeatable input-output checklists instead"
-    - "How to audit your weekly calendar for hidden low-leverage tasks"
-
+  - 'Episode Recap Reel: 3 hidden lessons in the latest episode (#greenentertainment,
+    #mittidebaway)'
+  - '6-Slide Carousel: Character arc breakdown — hero vs villain motivation analysis'
+  - 'Single-Pic Satire Card: The #1 plot twist nobody saw coming this week'
+  - 'Bilingual Urdu/English Text Post: Why realistic storytelling beats repetitive
+    tropes'
+  - '3-Frame Interactive Story Poll: Rate tonight''s episode 1-10'
 schedule_windows:
-  - [9, 11]
-  - [14, 16]
-  - [19, 22]
+- - 9
+  - 11
+- - 14
+  - 16
+- - 19
+  - 22

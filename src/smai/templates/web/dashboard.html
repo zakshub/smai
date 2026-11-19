@@ -201,8 +201,8 @@
       <form method="post" action="/actions/analyze-account" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(210px, 1fr)); gap:10px; align-items:center;">
         <input type="hidden" name="brand_slug" value="{{ brand.slug }}" />
         <input type="text" name="handle_or_url" value="{{ brand.handle }}" placeholder="Instagram @username or instagram.com/..." required />
-        <input type="text" name="niche_hint" value="{{ brand.niche }}" placeholder="Optional Niche (e.g. AI, Finance, Mindset, Fitness)" />
-        <input type="text" name="bio_hint" placeholder="Optional current IG bio or target audience note" />
+        <input type="text" name="niche_hint" value="" placeholder="Leave blank to Auto-Detect Niche from Existing Profile Posts" />
+        <input type="text" name="bio_hint" placeholder="Optional bio override (auto-scraped by default)" />
         <input type="text" name="ig_user_id" placeholder="Optional Meta IG_USER_ID (for live Graph API)" />
         <input type="password" name="ig_access_token" placeholder="Optional Meta IG_ACCESS_TOKEN" />
         <input type="password" name="gemini_api_key" placeholder="Optional Google GEMINI_API_KEY (saves to .env)" />
@@ -219,8 +219,40 @@
           </div>
           <span style="font-size:12px; color:var(--muted);">Detected Niche: <strong>{{ account_audit.detected_niche }}</strong></span>
         </div>
-        <p style="font-size:13px; color:#cbd5e1; margin:0 0 10px;">{{ account_audit.bio_diagnosis }}</p>
+        <p style="font-size:13px; color:#cbd5e1; margin:0 0 6px;">{{ account_audit.bio_diagnosis }}</p>
+        {% if account_audit.existing_content_summary %}
+        <p style="font-size:13px; color:var(--accent); margin:0 0 10px;"><strong>Existing Profile Content Analysis:</strong> {{ account_audit.existing_content_summary }}</p>
+        {% endif %}
+        {% if account_audit.report_markdown_path %}
+        <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+          <strong>Full Markdown Audit Report Saved At:</strong> <code>{{ account_audit.report_markdown_path }}</code>
+        </div>
+        {% endif %}
         <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px; font-size:12px;">
+          {% if account_audit.top_performing_posts %}
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
+            <strong style="color:var(--accent);">Top Performing Existing Posts on Profile:</strong>
+            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
+              {% for p in account_audit.top_performing_posts[:4] %}
+                <li style="margin-bottom:4px;">
+                  <strong>[{{ p.media_type }}]</strong> {{ p.likes }} likes, {{ p.comments }} comments{% if p.plays %}, {{ p.plays }} plays{% endif %} ({{ p.posted_at or 'recent' }}) &mdash;
+                  <em>"{{ p.caption_excerpt[:55] }}..."</em>
+                  {% if p.permalink %}<a href="{{ p.permalink }}" target="_blank" style="color:var(--accent);">View &nearr;</a>{% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
+          {% if account_audit.best_posting_windows_from_history %}
+          <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
+            <strong style="color:var(--good);">Best Posting Times (From Your Profile History):</strong>
+            <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
+              {% for w in account_audit.best_posting_windows_from_history %}
+                <li style="margin-bottom:4px;">{{ w }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% endif %}
           <div style="background:var(--panel); padding:10px 12px; border-radius:10px; border:1px solid var(--border);">
             <strong style="color:var(--warn);">Algorithm Growth Gaps to Fix:</strong>
             <ul style="margin:6px 0 0 16px; padding:0; color:var(--muted);">
